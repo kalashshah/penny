@@ -14,7 +14,7 @@ import type {
   Refund,
   Transaction,
 } from './types';
-import { fmtMoney } from './types';
+import { fmtMoney, RailError } from './types';
 import { sha256Hex } from '../crypto';
 
 export interface PayPalConfig {
@@ -91,7 +91,7 @@ export class PayPalProvider implements PaymentProvider {
       },
       body: 'grant_type=client_credentials',
     });
-    if (!res.ok) throw new Error(`PayPal auth failed (${res.status}); check the client id and secret of the PayPal app`);
+    if (!res.ok) throw new RailError(`PayPal auth failed (${res.status}); check the client id and secret of the PayPal app`, res.status);
     const j = (await res.json()) as { access_token: string; expires_in: number };
     tokens.set(key, { token: j.access_token, exp: Date.now() + j.expires_in * 1000 });
     return j.access_token;
@@ -119,9 +119,9 @@ export class PayPalProvider implements PaymentProvider {
     }
     const text = await res.text();
     if (res.status === 403) {
-      throw new Error(`PayPal ${method} ${path} was refused (403): this PayPal app lacks the permission for it. In developer.paypal.com → Apps & Credentials → your app → Features, enable ${featureFor(path)}, save, then retry (PayPal can take a few minutes to apply it).`);
+      throw new RailError(`PayPal ${method} ${path} was refused (403): this PayPal app lacks the permission for it. In developer.paypal.com → Apps & Credentials → your app → Features, enable ${featureFor(path)}, save, then retry (PayPal can take a few minutes to apply it).`, 403);
     }
-    if (!res.ok) throw new Error(`PayPal ${method} ${path} failed (${res.status}): ${describeError(text)}`);
+    if (!res.ok) throw new RailError(`PayPal ${method} ${path} failed (${res.status}): ${describeError(text)}`, res.status);
     return (text ? JSON.parse(text) : {}) as T;
   }
 

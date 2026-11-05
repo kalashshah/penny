@@ -155,6 +155,25 @@ export interface PaymentProvider {
   registerWebhook(url: string): Promise<string>;
 }
 
+/** The rail answered with an HTTP error. `status` is what it said, so callers can tell "no" from "not sure". */
+export class RailError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'RailError';
+  }
+}
+
+/**
+ * True only when the rail definitely turned the request down (a 4xx it would give again): the money did not move.
+ * A network error, a timeout, a 5xx, 408/409/429, or anything that is not a RailError may have gone through.
+ */
+export function isDefiniteRejection(e: unknown): boolean {
+  return e instanceof RailError && e.status >= 400 && e.status < 500 && ![408, 409, 429].includes(e.status);
+}
+
 export function fmtMoney(m: Money | undefined): string {
   if (!m) return '';
   return `${m.currency} ${m.value.toFixed(2)}`;

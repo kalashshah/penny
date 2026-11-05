@@ -1,4 +1,4 @@
-import { Approvals } from './approvals';
+import { Approvals, reconcilePayout } from './approvals';
 import { ingestEndedCalls } from './calls';
 import { rows } from './db';
 import type { Env } from './env';
@@ -16,6 +16,7 @@ export async function runCron(env: Env): Promise<void> {
     ingestEndedCalls(env, async (tenantId) => new Memory(env, tenantId)).catch((e) => console.error('ingest_failed', String(e))),
     Approvals.expireStale(env.DB).catch((e) => console.error('expire_failed', String(e))),
     pollWaiting(env).catch((e) => console.error('poll_waiting_failed', String(e))),
+    reconcilePayouts(env).catch((e) => console.error('reconcile_failed', String(e))),
     // Once an hour (the cron runs every five minutes): a PayPal read per tenant is too many to do every run.
     new Date().getUTCMinutes() < 5 ? watchDeadlines(env).catch((e) => console.error('deadlines_failed', String(e))) : undefined,
     new Date().getUTCMinutes() < 5 ? sendDigests(env).catch((e) => console.error('digest_failed', String(e))) : undefined,
@@ -56,6 +57,35 @@ export async function pollWaiting(env: Env, limit = 10, minAgeMs = 5 * 60_000): 
     }
   }
   return acted;
+}
+
+/**
+ * Payouts left claimed without an outcome (PayPal's answer was unclear, or the worker died mid-run) for over ten
+ * minutes: send each again under its own id, which PayPal dedupes, and record what it says. A few per run.
+ */
+export async function reconcilePayouts(env: Env, limit = 5, minAgeMs = 10 * 60_000): Promise<number> {
+  const stuck = await Approvals.stuckPayouts(env.DB, limit, minAgeMs);
+  const tenants = new Tenants(env);
+  let settled = 0;
+  for (const p of stuck) {
+    try {
+      const t = await tenants.byId(p.tenantId);
+      if (!t || !isConnected(t)) continue;
+      const approvals = new Approvals(env.DB, t.id);
+      const out = await reconcilePayout({ approvals, provider: await providerFor(env, tenants, t) }, p);
+      if (out.status !== 'done' && out.status !== 'failed') continue;
+      settled++;
+      await createAlert(env, t.id, {
+        eventId: `reconciled:${p.id}`,
+        title: out.status === 'done' ? `${p.description}: PayPal confirmed it` : `${p.description}: it did not go through`,
+        detail: out.result ?? '',
+        page: `${env.PUBLIC_URL}/p/proposal/${p.id}?k=${encodeURIComponent(t.pageKey)}`,
+      });
+    } catch (e) {
+      console.error('reconcile_item_failed', { proposal: p.id, error: String(e) });
+    }
+  }
+  return settled;
 }
 
 /** An invoice this many days past due gets an alert, at most once a week. */

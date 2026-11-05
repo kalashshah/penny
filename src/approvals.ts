@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { rows, shortId } from './db';
 import type { Money, PaymentProvider } from './providers/types';
-import { fmtMoney } from './providers/types';
+import { fmtMoney, isDefiniteRejection } from './providers/types';
 
 export type ActionKind = 'payout' | 'refund' | 'accept_dispute';
 export type ProposalStatus = 'waiting' | 'pending' | 'approved' | 'rejected' | 'expired' | 'done' | 'failed';
@@ -172,6 +172,11 @@ export class Approvals {
       .run();
   }
 
+  /** Records what is known about a claimed proposal that has not settled (PayPal's answer was unclear), keeping it claimed. */
+  async note(id: string, result: string): Promise<void> {
+    await this.db.prepare("UPDATE proposals SET result = ? WHERE id = ? AND tenant_id = ? AND status = 'approved'").bind(result, id, this.tenantId).run();
+  }
+
   /**
    * The rail took a payout and later reported it failed for good (denied, returned, blocked...): it is not done after all.
    * Only a payout that ran, so a stray or replayed event cannot touch anything else.
@@ -199,6 +204,17 @@ export class Approvals {
       .bind(batchId ? `Payout ${batchId} is success. ` : '', id, this.tenantId)
       .first<Row>();
     return r ? fromRow(r) : null;
+  }
+
+  /**
+   * Cron, across every tenant: payouts claimed more than `minAgeMs` ago that never settled (PayPal's answer was unclear,
+   * or the worker died mid-run). A random few, so ones that stay unclear cannot starve the rest.
+   */
+  static async stuckPayouts(db: D1Database, limit: number, minAgeMs: number, now = Date.now()): Promise<(Proposal & { tenantId: string })[]> {
+    const r = await rows<Row & { tenant_id: string }>(
+      db.prepare("SELECT * FROM proposals WHERE kind = 'payout' AND status = 'approved' AND decided_at < ? ORDER BY RANDOM() LIMIT ?").bind(now - minAgeMs, limit),
+    );
+    return r.map((x) => ({ ...fromRow(x), tenantId: x.tenant_id }));
   }
 
   /** Cron, across every tenant. */
@@ -233,8 +249,8 @@ export async function execute(provider: PaymentProvider, p: Proposal): Promise<s
 }
 
 export interface ActionOutcome {
-  /** unchanged: it was already decided (or being run), so this call did nothing. */
-  status: 'done' | 'needs_approval' | 'failed' | 'unchanged';
+  /** unchanged: it was already decided (or being run), so this call did nothing. unknown: PayPal's answer was unclear; it is being checked. */
+  status: 'done' | 'needs_approval' | 'failed' | 'unchanged' | 'unknown';
   proposal: Proposal;
   result?: string;
 }
@@ -285,7 +301,7 @@ async function claimAndSettle(deps: { approvals: Approvals; provider: PaymentPro
 export function describeUnchanged(p: Proposal): string {
   switch (p.status) {
     case 'approved':
-      return 'This action is already approved and running; nothing more was done.';
+      return `This action is already approved and running${p.result ? ` (${p.result})` : ''}; nothing more was done.`;
     case 'done':
     case 'failed':
       return `This action already ran (${p.status})${p.result ? `: ${p.result}` : ''}. Nothing more was done.`;
@@ -296,14 +312,68 @@ export function describeUnchanged(p: Proposal): string {
   }
 }
 
+/** What a payout whose outcome PayPal left unclear says until reconcilePayout settles it. */
+export const CHECKING = 'Penny is checking with PayPal whether it went through and will update this; do not pay it again.';
+
 async function settle(deps: { approvals: Approvals; provider: PaymentProvider }, p: Proposal): Promise<ActionOutcome> {
+  let ok: boolean;
+  let result: string;
+  try {
+    result = await execute(deps.provider, p);
+    ok = true;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // A payout PayPal may have taken (network error, timeout, 5xx) is not a failure: marking it one invites paying twice.
+    // It stays claimed, and the cron re-sends it with the same sender_batch_id, which PayPal will not pay twice.
+    if (p.kind === 'payout' && !isDefiniteRejection(e)) {
+      result = `PayPal did not answer clearly (${msg}). ${CHECKING}`;
+      await deps.approvals.note(p.id, result);
+      return { status: 'unknown', proposal: { ...p, result }, result };
+    }
+    ok = false;
+    result = msg;
+  }
+  await deps.approvals.finish(p.id, ok, result);
+  return outcomeOf(deps.approvals, p, ok, result);
+}
+
+/** After finish: what the proposal actually is now, since a webhook (failPayout, completePayout) may have got there first. */
+async function outcomeOf(approvals: Approvals, p: Proposal, ok: boolean, result: string): Promise<ActionOutcome> {
+  const now = (await approvals.get(p.id)) ?? { ...p, status: ok ? ('done' as const) : ('failed' as const), result };
+  const status = now.status === 'done' ? 'done' : now.status === 'failed' ? 'failed' : 'unknown';
+  return { status, proposal: now, result: now.result ?? result };
+}
+
+/** PayPal's way of saying a batch with this sender_batch_id already exists: the first attempt reached it. */
+function alreadySent(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /DUPLICATE_REQUEST_ID|SENDER_BATCH_ID_ALREADY_USED|sender_batch_id.*(already|exists|used)/i.test(msg);
+}
+
+/**
+ * Settles a payout left claimed ('approved') without an outcome by sending it again under the same id: PayPal answers a
+ * replayed PayPal-Request-Id with the first batch, refuses a second batch with the same sender_batch_id, and pays it
+ * once if the first never arrived. A still-unclear answer leaves it for the next run.
+ */
+export async function reconcilePayout(deps: { approvals: Approvals; provider: PaymentProvider }, p: Proposal): Promise<ActionOutcome> {
+  if (p.kind !== 'payout' || p.status !== 'approved') return { status: 'unchanged', proposal: p, result: describeUnchanged(p) };
   try {
     const result = await execute(deps.provider, p);
     await deps.approvals.finish(p.id, true, result);
-    return { status: 'done', proposal: { ...p, status: 'done', result }, result };
+    return outcomeOf(deps.approvals, p, true, result);
   } catch (e) {
-    const result = e instanceof Error ? e.message : String(e);
-    await deps.approvals.finish(p.id, false, result);
-    return { status: 'failed', proposal: { ...p, status: 'failed', result }, result };
+    const msg = e instanceof Error ? e.message : String(e);
+    if (alreadySent(e)) {
+      const result = `PayPal already has this payout from the first attempt (${msg}); its own reports will say if it fails.`;
+      await deps.approvals.finish(p.id, true, result);
+      return outcomeOf(deps.approvals, p, true, result);
+    }
+    if (isDefiniteRejection(e)) {
+      await deps.approvals.finish(p.id, false, msg);
+      return outcomeOf(deps.approvals, p, false, msg);
+    }
+    const result = `PayPal still did not answer clearly (${msg}). ${CHECKING}`;
+    await deps.approvals.note(p.id, result);
+    return { status: 'unknown', proposal: { ...p, result }, result };
   }
 }

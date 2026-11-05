@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { Approvals, PROPOSAL_TTL_MS, confirm, decideTransition, needsApproval, releaseWaiting, runOrHold, type Proposal } from '../src/approvals';
-import type { PaymentProvider } from '../src/providers/types';
+import { Approvals, PROPOSAL_TTL_MS, confirm, decideTransition, needsApproval, reconcilePayout, releaseWaiting, runOrHold, type Proposal } from '../src/approvals';
+import { RailError, type PaymentProvider } from '../src/providers/types';
 import { fakeD1 } from './helpers/d1';
 
 const base: Proposal = { id: 'ap_1', kind: 'payout', description: 'Pay USD 500.00 to sam@example.com', amount: 500, currency: 'USD', input: {}, status: 'pending', createdAt: 1_000 };
@@ -155,5 +155,80 @@ describe('runOrHold', () => {
     const foreign = await runOrHold(deps, 'payout', 'Pay 50 EUR', { value: 50, currency: 'EUR' }, { recipientEmail: 'a@example.com' });
     expect(foreign.status).toBe('needs_approval');
     expect(calls.payout).toBe(1);
+  });
+});
+
+describe('unclear payout answers', () => {
+  const setup = (payout: (n: number, key: string) => Promise<unknown>) => {
+    const approvals = new Approvals(fakeD1(), 't_1');
+    const keys: string[] = [];
+    const provider = {
+      name: 'fake',
+      async payout({ amount, recipientEmail, idempotencyKey }: { amount: { value: number; currency: string }; recipientEmail: string; idempotencyKey: string }) {
+        keys.push(idempotencyKey);
+        await payout(keys.length, idempotencyKey);
+        return { id: 'PB-9', status: 'pending', amount, recipient: recipientEmail };
+      },
+    } as unknown as PaymentProvider;
+    const held = () => approvals.create('payout', 'Pay USD 500.00 to sam@example.com', { value: 500, currency: 'USD' }, { recipientEmail: 'sam@example.com' });
+    return { approvals, provider, keys, held };
+  };
+
+  it('a network error or 5xx keeps the payout claimed and says it is being checked; reconciling re-sends under the same id', async () => {
+    for (const err of [new TypeError('fetch failed'), new RailError('PayPal POST /v1/payments/payouts failed (503): busy', 503)]) {
+      const { approvals, provider, keys, held } = setup(async (n) => {
+        if (n === 1) throw err;
+      });
+      const p = await held();
+      const out = await confirm({ approvals, provider }, p.id, 'Alex');
+      expect(out?.status).toBe('unknown');
+      expect(out?.result).toMatch(/do not pay it again/);
+      const saved = await approvals.get(p.id);
+      expect(saved?.status).toBe('approved');
+      expect((await confirm({ approvals, provider }, p.id, 'Sam'))?.status).toBe('unchanged');
+      expect(keys).toHaveLength(1);
+
+      const [stuck] = await Approvals.stuckPayouts((approvals as unknown as { db: never }).db, 5, 10 * 60_000, Date.now() + 11 * 60_000);
+      expect(stuck.id).toBe(p.id);
+      expect(await Approvals.stuckPayouts((approvals as unknown as { db: never }).db, 5, 10 * 60_000)).toHaveLength(0);
+      const r = await reconcilePayout({ approvals, provider }, saved!);
+      expect(r.status).toBe('done');
+      expect(keys).toEqual([p.id, p.id]);
+      expect((await approvals.get(p.id))?.status).toBe('done');
+    }
+  });
+
+  it('a definite 4xx is a failure', async () => {
+    const { approvals, provider, held } = setup(async () => {
+      throw new RailError('PayPal POST /v1/payments/payouts failed (422): INSUFFICIENT_FUNDS', 422);
+    });
+    const p = await held();
+    expect((await confirm({ approvals, provider }, p.id, 'Alex'))?.status).toBe('failed');
+    expect((await approvals.get(p.id))?.status).toBe('failed');
+  });
+
+  it('reconciling: PayPal saying the batch already exists means it was sent; another 4xx means it was not', async () => {
+    const dup = setup(async () => {
+      throw new RailError('PayPal POST /v1/payments/payouts failed (400): USER_BUSINESS_ERROR – Batch with given sender_batch_id already exists', 400);
+    });
+    const a = await dup.approvals.claim((await dup.held()).id, 'Alex');
+    expect((await reconcilePayout(dup, a!)).status).toBe('done');
+    const no = setup(async () => {
+      throw new RailError('PayPal POST /v1/payments/payouts failed (422): RECEIVER_UNREGISTERED', 422);
+    });
+    const b = await no.approvals.claim((await no.held()).id, 'Alex');
+    expect((await reconcilePayout(no, b!)).status).toBe('failed');
+  });
+
+  it('reports what the proposal really is when a webhook failed it while it was settling', async () => {
+    let approvals!: Approvals;
+    const rig = setup(async (_n, key) => {
+      await approvals.failPayout(key, 'denied');
+    });
+    approvals = rig.approvals;
+    const p = await rig.held();
+    const out = await confirm(rig, p.id, 'Alex');
+    expect(out?.status).toBe('failed');
+    expect(out?.proposal.status).toBe('failed');
   });
 });

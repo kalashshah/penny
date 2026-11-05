@@ -122,7 +122,7 @@ export function describeUnsent(p: Pick<Proposal, 'status' | 'result'>): string {
     case 'pending':
       return 'It has not been paid: it is still waiting for a yes.';
     case 'approved':
-      return 'It was approved and is being sent to PayPal right now.';
+      return p.result ? `It was approved and has not settled yet: ${p.result}` : 'It was approved and is being sent to PayPal right now.';
     case 'failed':
       return `It never reached PayPal: ${p.result ?? 'it failed'}.`;
     case 'done':
