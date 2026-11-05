@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import type { CSSProperties } from 'react';
-import { Approvals } from '@/approvals';
+import { Approvals, expiresAt } from '@/approvals';
 import { listCalls } from '@/calls';
 import { errorMessage, getEnv, providerOf, type Owner } from '@/context';
 import { DecideButtons, DismissButton } from '@/components/decide-buttons';
@@ -90,12 +90,14 @@ export async function Dashboard({ owner, openAlert }: { owner: Owner; openAlert?
       )}
 
       {pending.length > 0 && (
-        <Card title="Waiting for your yes" right={<span className="small muted">expires 30 min after it was proposed</span>} d={0.1}>
+        <Card title="Waiting for your yes" right={<span className="small muted">unanswered ones expire</span>} d={0.1}>
           {pending.map((p, i) => (
             <div className="alertbar hold t-toast" key={p.id} style={order(alerts.length + i)}>
               <div>
                 <b>{p.description}</b>
-                <span className="small muted">Proposed {when(p.createdAt)}</span>
+                <span className="small muted">
+                  Proposed {when(p.createdAt)} · expires {when(expiresAt(p))}
+                </span>
               </div>
               <span className="a">
                 <DecideButtons id={p.id} />

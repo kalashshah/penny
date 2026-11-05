@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { Approvals } from '@/approvals';
-import { getEnv, requirePageTenant, type SearchParams } from '@/context';
+import { currentOwner, getEnv, requirePageTenant, type SearchParams } from '@/context';
 import { DecideButtons } from '@/components/decide-buttons';
 import { Chip, delay, money, ShareHead, when } from '@/components/ui';
 
@@ -11,6 +11,8 @@ export const metadata: Metadata = { title: 'Approve? · Penny' };
 export default async function ProposalPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
   const { id } = await params;
   const t = await requirePageTenant((await searchParams).k, `/p/proposal/${id}`);
+  // Penny's screen-sharing browser comes in with the page key and no session: it sees the page, not the buttons or the dashboard.
+  const isOwner = (await currentOwner())?.tenant.id === t.id;
   const p = await new Approvals(getEnv().DB, t.id).get(decodeURIComponent(id));
   if (!p) notFound();
   const open = p.status === 'pending';
@@ -23,11 +25,13 @@ export default async function ProposalPage({ params, searchParams }: { params: P
         <div className="what">{p.description}</div>
         {open ? (
           <>
-            <div className="row" style={{ justifyContent: 'center' }}>
-              <DecideButtons id={p.id} size="lg" />
-            </div>
-            <p className="small muted" style={{ margin: '16px 0 0' }}>
-              Or just say yes to Penny on the call.
+            {isOwner && (
+              <div className="row" style={{ justifyContent: 'center' }}>
+                <DecideButtons id={p.id} size="lg" />
+              </div>
+            )}
+            <p className="small muted" style={{ margin: isOwner ? '16px 0 0' : 0 }}>
+              {isOwner ? 'Or just say yes to Penny on the call.' : 'Say yes to Penny on the call, or approve it from your dashboard.'}
             </p>
           </>
         ) : p.status === 'waiting' ? (
@@ -43,9 +47,11 @@ export default async function ProposalPage({ params, searchParams }: { params: P
             </p>
           </>
         )}
-        <p className="small" style={{ margin: '18px 0 0' }}>
-          <Link href={`/?k=${encodeURIComponent(t.pageKey)}`}>Dashboard</Link>
-        </p>
+        {isOwner && (
+          <p className="small" style={{ margin: '18px 0 0' }}>
+            <Link href="/">Dashboard</Link>
+          </p>
+        )}
       </div>
     </>
   );

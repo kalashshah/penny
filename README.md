@@ -39,7 +39,7 @@ Later, Acme pays. Penny posts an alert: *"Invoice 0042 (USD 4,000.00) was paid b
 |---|---|---|
 | Tenants | `src/tenants.ts` | one business per user; PayPal secret and MCP token sealed with AES-GCM (`src/crypto.ts`) |
 | Login | `src/auth.ts` | better-auth: email one-time codes, Google when configured |
-| Penny's tools | `src/tools.ts` | 19 MCP tools: summary, cash forecast, invoices, reminders, disputes, pay, pay-when-paid, refund, approvals, transactions, memory |
+| Penny's tools | `src/tools.ts` | 20 MCP tools: summary, reports, cash forecast, invoices, reminders, disputes, pay, pay-when-paid, refund, approvals, transactions, memory |
 | Payment rail | `src/providers/paypal.ts` | Invoicing v2, Disputes v1, Payouts v1, Payments v2 (refunds), Transaction Search v1, Webhooks (signature verification) |
 | Approvals | `src/approvals.ts` | propose → hold or run → confirm/cancel; 30-minute expiry; idempotent execution. Pay-when-paid payouts wait for an invoice's paid webhook, then run or ask |
 | Forecast | `src/forecast.ts`, `src/app/(app)/p/forecast/` | balance today (PayPal Balances), open invoices dated by how late each customer usually pays, held payouts, last month's payments repeating, open disputes if lost; a [Bryntum Scheduler](https://bryntum.com/products/scheduler/) timeline where dragging a payment re-runs the balance line |
@@ -57,7 +57,7 @@ Later, Acme pays. Penny posts an alert: *"Invoice 0042 (USD 4,000.00) was paid b
 `pay`, `refund_invoice` and `accept_dispute` go through `runOrHold`:
 
 - at or under the tenant's approval threshold: executed immediately, recorded as auto-approved;
-- above it: a **proposal** is stored and the tool returns `needs_approval` with its id. Penny reads the amount and recipient back and asks. Only an explicit yes makes her call `confirm_action` (with the approver's name). The signed-in owner can approve or reject the same proposal on the dashboard. Unanswered proposals expire after 30 minutes. Execution uses the proposal id as PayPal's idempotency key, so a retry can never pay twice.
+- above it: a **proposal** is stored and the tool returns `needs_approval` with its id. Penny reads the amount and recipient back and asks. Only an explicit yes makes her call `confirm_action` (with the approver's name). The signed-in owner can approve or reject the same proposal on the dashboard. Unanswered proposals expire after 30 minutes (a day for a pay-when-paid one released by the customer paying). A proposal is claimed with one conditional update before it runs, so two yeses at once still pay once. Execution uses the proposal id as PayPal's idempotency key, so a retry can never pay twice.
 
 ## How tenants stay apart
 
@@ -69,7 +69,7 @@ Later, Acme pays. Penny posts an alert: *"Invoice 0042 (USD 4,000.00) was paid b
 
 ## Swapping the payment rail
 
-Penny talks to `PaymentProvider` (`src/providers/types.ts`), never to PayPal directly. Add `src/providers/airwallex.ts` implementing the same 14 methods, add a `case` in `src/providers/index.ts`, store its credentials on the tenant. Tools, approvals, pages, webhooks and calls do not change.
+Penny talks to `PaymentProvider` (`src/providers/types.ts`), never to PayPal directly. Add `src/providers/airwallex.ts` implementing the same 15 methods, add a `case` in `src/providers/index.ts`, store its credentials on the tenant. Tools, approvals, pages, webhooks and calls do not change.
 
 ## Run it yourself
 

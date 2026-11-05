@@ -28,6 +28,11 @@ export const PROPOSAL_TTL_MS = 30 * 60_000;
 export const RELEASED_TTL_MS = 24 * 60 * 60_000;
 
 /** The threshold is in the tenant's currency; an amount in any other is held, never converted and guessed at. */
+/** When an unanswered pending proposal lapses: a day for one a customer's payment released, else 30 minutes. */
+export function expiresAt(p: Pick<Proposal, 'createdAt' | 'afterInvoice'>): number {
+  return p.createdAt + (p.afterInvoice ? RELEASED_TTL_MS : PROPOSAL_TTL_MS);
+}
+
 export function needsApproval(money: Money, threshold: number, currency: string): boolean {
   return money.currency.toUpperCase() !== currency.toUpperCase() || money.value > threshold;
 }

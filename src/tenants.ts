@@ -178,7 +178,9 @@ export class Tenants {
       return { ok: false, notes: [e instanceof Error ? e.message : String(e)] };
     }
     const sealed = await this.sealer.seal(input.clientSecret);
-    let webhookId: string | null = null;
+    // Reconnecting the same app without registering (locally, or PayPal said no) keeps the webhook it already has;
+    // a different app or env cannot verify with the old app's webhook id.
+    let webhookId = t.paypalClientId === input.clientId && t.paypalEnv === input.env ? t.paypalWebhookId : null;
     if (/^https:\/\//.test(this.env.PUBLIC_URL) && !/localhost|127\.0\.0\.1/.test(this.env.PUBLIC_URL)) {
       try {
         webhookId = await provider.registerWebhook(`${this.env.PUBLIC_URL}/webhooks/paypal/${t.id}`);
