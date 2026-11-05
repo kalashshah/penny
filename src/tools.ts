@@ -4,7 +4,7 @@ import { confirm, runOrHold, type Approvals } from './approvals';
 import type { Env } from './env';
 import { describeForecast, formatWhatIf, loadForecast } from './forecast';
 import type { Memory } from './memory';
-import type { Dispute, Invoice, PaymentProvider } from './providers/types';
+import type { Dispute, Invoice, Money, PaymentProvider } from './providers/types';
 import { fmtMoney } from './providers/types';
 import { REPORT_PAGES } from './reports';
 import { describeSummary, summarize } from './summary';
@@ -66,6 +66,23 @@ function compactDispute(d: Dispute) {
     buyer: d.buyerEmail,
     lastMessages: d.messages.slice(-4).map((m) => `${m.by}: ${m.text}`),
   };
+}
+
+/**
+ * What can be refunded on an invoice: only one paid (fully or partly) through PayPal, and at most what was paid.
+ * Returns the amount to refund or a sentence the call agent can say.
+ */
+export function refundable(i: Invoice, requested?: number): { ok: true; money: Money } | { ok: false; error: string } {
+  if (i.status !== 'paid' && i.status !== 'partially_paid') return { ok: false, error: `Invoice ${i.number} is ${i.status.replace('_', ' ')}, not paid, so there is nothing to refund.` };
+  if (!i.paymentIds.length) return { ok: false, error: `Invoice ${i.number} was marked paid outside PayPal, so Penny cannot refund it; refund the customer the way they paid.` };
+  // A fully paid invoice without paid_amount was paid in full; a partly paid one has paid total minus what is due.
+  const paid = i.paid?.value ?? (i.status === 'paid' ? i.total.value : i.total.value - i.due.value);
+  const cap = Math.round(paid * 100) / 100;
+  if (cap <= 0) return { ok: false, error: `Invoice ${i.number} shows no money received, so there is nothing to refund.` };
+  const value = Math.round((requested ?? cap) * 100) / 100;
+  const currency = i.paid?.currency ?? i.total.currency;
+  if (value > cap) return { ok: false, error: `Only ${fmtMoney({ value: cap, currency })} was paid on invoice ${i.number}; refund that or less.` };
+  return { ok: true, money: { value, currency } };
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
@@ -282,11 +299,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
 
   server.registerTool(
     'refund_invoice',
-    { description: `Refund a paid invoice, fully or partially. Above ${currency} ${threshold} this needs a spoken approval (see pay).`, inputSchema: { invoice_id: z.string(), amount: z.number().positive().optional(), reason: z.string().max(200).optional() } },
+    { description: `Refund a paid invoice, fully or partially (at most what the customer paid; the default is all of it). Above ${currency} ${threshold} this needs a spoken approval (see pay).`, inputSchema: { invoice_id: z.string(), amount: z.number().positive().optional(), reason: z.string().max(200).optional() } },
     (a) =>
       guard(async () => {
         const inv = await provider.getInvoice(a.invoice_id);
-        const m = { value: Math.round((a.amount ?? inv.total.value) * 100) / 100, currency: inv.total.currency };
+        const r = refundable(inv, a.amount);
+        if (!r.ok) return { error: r.error };
+        const m = r.money;
         const out = await runOrHold(money, 'refund', `Refund ${fmtMoney(m)} on invoice ${inv.number} (${inv.customer.name || inv.customer.email})${a.reason ? `: ${a.reason}` : ''}`, m, { invoiceId: inv.id, invoiceNumber: inv.number });
         return { status: out.status, proposal_id: out.proposal.id, description: out.proposal.description, result: out.result, page: pageUrl(env, withKey(`/p/proposal/${out.proposal.id}`)) };
       }),

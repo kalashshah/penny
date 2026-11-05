@@ -23,6 +23,8 @@ export interface Invoice {
   payLink?: string;
   memo?: string;
   items: { name: string; quantity: number; unitAmount: Money }[];
+  /** What has been paid against it so far, when the rail says. */
+  paid?: Money;
   /** Provider ids of the payments received against it (what a refund targets). */
   paymentIds: string[];
 }
