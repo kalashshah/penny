@@ -119,7 +119,8 @@ export function ShareHead({ title, k, right }: { title: ReactNode; k: string; ri
   return (
     <>
       <nav className="app">
-        <Logo href={`/?k=${encodeURIComponent(k)}`} />
+        {/* "/" is the landing page without a session (Penny's browser), so home here is the summary page. */}
+        <Logo href={`/p/summary?k=${encodeURIComponent(k)}`} />
         <div className="links">
           <PageLinks k={k} />
         </div>
