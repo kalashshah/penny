@@ -347,7 +347,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     'record_invoice_payment',
     {
       description:
-        'Record money a customer paid outside PayPal (cash, cheque, bank transfer) against an invoice, so it shows as paid. amount defaults to everything still due; payment_date defaults to today. If that pays it off, payouts waiting on it (pay_when_paid) go or ask for a yes, as if PayPal had been paid.',
+        'Record money a customer paid outside PayPal (cash, cheque, bank transfer) against an invoice, so it shows as paid. amount defaults to everything still due; payment_date defaults to today. If that pays it off, payouts waiting on it (pay_when_paid) are released and always need a yes, since that money is not in the PayPal balance.',
       inputSchema: {
         invoice_id: z.string(),
         method: z.enum(['BANK_TRANSFER', 'CASH', 'CHECK', 'WIRE_TRANSFER', 'OTHER']),
@@ -366,8 +366,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         const idempotencyKey = await invoiceKey(tenant.id, a, Date.now(), 'penny-pay');
         await provider.recordInvoicePayment(inv.id, { method: a.method, amount: r.money, date, note: a.note, idempotencyKey });
         const after = await provider.getInvoice(inv.id);
-        // Paid in full outside PayPal is still paid: what waited on this invoice is released now rather than on a webhook.
-        const released = after.status === 'paid' ? await releaseFor(deps.env, tenant, provider, inv.id) : null;
+        // Paid in full outside PayPal is still paid, so what waited on this invoice is released now. But that money is
+        // not in the PayPal balance the payout would come from, so every released payout waits for a yes.
+        const released = after.status === 'paid' ? await releaseFor(deps.env, tenant, provider, inv.id, { alwaysAsk: true }) : null;
         const left = after.status === 'paid' ? 'it is now paid in full' : `${fmtMoney(after.due)} is still due`;
         return {
           recorded: true,

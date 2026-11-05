@@ -238,11 +238,12 @@ export async function runOrHold(
 }
 
 /** A customer paid: run what was waiting on it if small, otherwise leave it pending for a yes. */
-export async function releaseWaiting(deps: MoneyDeps, invoiceId: string): Promise<ActionOutcome[]> {
+/** `alwaysAsk`: the money came in outside PayPal (cash, cheque), so nothing pays out of the balance without a yes. */
+export async function releaseWaiting(deps: MoneyDeps, invoiceId: string, opts: { alwaysAsk?: boolean } = {}): Promise<ActionOutcome[]> {
   const released = await deps.approvals.release(invoiceId);
   return Promise.all(
     released.map(async (p) => {
-      if (needsApproval({ value: p.amount, currency: p.currency }, deps.threshold, deps.currency)) return { status: 'needs_approval' as const, proposal: p };
+      if (opts.alwaysAsk || needsApproval({ value: p.amount, currency: p.currency }, deps.threshold, deps.currency)) return { status: 'needs_approval' as const, proposal: p };
       return (await claimAndSettle(deps, p.id, 'auto (under threshold, invoice paid)')) ?? { status: 'failed' as const, proposal: p, result: 'The action vanished before it ran.' };
     }),
   );

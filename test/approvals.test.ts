@@ -127,6 +127,14 @@ describe('confirm (against SQLite)', () => {
     expect(calls.payout).toBe(1);
   });
 
+  it('pay-when-paid: money recorded outside PayPal always asks, even under the threshold', async () => {
+    const { approvals, provider, calls } = setup();
+    await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
+    const [o] = await releaseWaiting({ approvals, provider, threshold: 100, currency: 'USD' }, 'INV2-1', { alwaysAsk: true });
+    expect(o.status).toBe('needs_approval');
+    expect(calls.payout).toBe(0);
+  });
+
   it('pay-when-paid: a release over the threshold asks, then a yes pays', async () => {
     const { approvals, provider, calls } = setup();
     const p = await approvals.create('payout', 'Pay later', { value: 500, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');

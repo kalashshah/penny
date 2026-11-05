@@ -103,8 +103,8 @@ export async function handleWebhook(
 }
 
 /** Payouts that were waiting on this invoice ("pay Sam when Acme pays") go now, or ask for a yes. Null when none waited. */
-export async function releaseFor(env: Env, t: Tenant, provider: PaymentProvider, invoiceId: string): Promise<{ detail: string; page?: string } | null> {
-  const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, invoiceId);
+export async function releaseFor(env: Env, t: Tenant, provider: PaymentProvider, invoiceId: string, opts: { alwaysAsk?: boolean } = {}): Promise<{ detail: string; page?: string } | null> {
+  const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, invoiceId, opts);
   if (!released.length) return null;
   const detail = released.map((o) => (o.status === 'needs_approval' ? `You asked to pay ${o.proposal.input.recipientEmail} ${o.proposal.currency} ${o.proposal.amount.toFixed(2)} once this came in. It needs your yes.` : (o.result ?? ''))).join(' ');
   const ask = released.find((o) => o.status === 'needs_approval');
