@@ -2,7 +2,7 @@ import { Approvals, releaseWaiting } from './approvals';
 import { rows, shortId } from './db';
 import type { Env } from './env';
 import type { Memory } from './memory';
-import type { PaymentProvider, PennyEvent } from './providers/types';
+import type { Invoice, PaymentProvider, PennyEvent } from './providers/types';
 import type { Tenant } from './tenants';
 
 export interface Alert {
@@ -115,9 +115,17 @@ export async function handleWebhook(
   return Response.json({ ok: true, alert: alert.id });
 }
 
-/** Payouts that were waiting on this invoice ("pay Sam when Acme pays") go now, or ask for a yes. Null when none waited. */
-export async function releaseFor(env: Env, t: Tenant, provider: PaymentProvider, invoiceId: string, opts: { alwaysAsk?: boolean } = {}): Promise<{ detail: string; page?: string } | null> {
-  const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, invoiceId, opts);
+/**
+ * Payouts that were waiting on this invoice ("pay Sam when Acme pays") go now, or ask for a yes. Null when none waited
+ * or the invoice is not paid in full. Every caller (webhook, cron, record_invoice_payment) comes through here, so the
+ * rule lives here: a partial payment releases nothing, and unless the whole amount came in through PayPal itself
+ * (cash, cheque, "marked as paid" do not put money in the balance) every released payout waits for a yes.
+ * `invoice`: the invoice as just fetched, to save asking PayPal again.
+ */
+export async function releaseFor(env: Env, t: Tenant, provider: PaymentProvider, invoiceId: string, opts: { invoice?: Invoice } = {}): Promise<{ detail: string; page?: string } | null> {
+  const inv = opts.invoice ?? (await provider.getInvoice(invoiceId));
+  if (inv.status !== 'paid' || inv.due.value > 0) return null;
+  const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, invoiceId, { alwaysAsk: !inv.paidViaRail });
   if (!released.length) return null;
   const detail = released.map((o) => (o.status === 'needs_approval' ? `You asked to pay ${o.proposal.input.recipientEmail} ${o.proposal.currency} ${o.proposal.amount.toFixed(2)} once this came in. It needs your yes.` : (o.result ?? ''))).join(' ');
   const ask = released.find((o) => o.status === 'needs_approval');

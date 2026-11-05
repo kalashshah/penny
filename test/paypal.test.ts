@@ -17,6 +17,14 @@ describe('toInvoice', () => {
     expect(i.payLink).toContain('sandbox.paypal.com');
     expect(i.items[0]).toEqual({ name: 'Sprint', quantity: 1, unitAmount: { value: 4000, currency: 'USD' } });
   });
+  it('knows whether the money came in through PayPal', () => {
+    const raw = (status: string, type?: string) => toInvoice({ id: 'I', status, payments: { transactions: type ? [{ payment_id: 'P', type }] : [] } }).paidViaRail;
+    expect(raw('PAID', 'PAYPAL')).toBe(true);
+    expect(raw('PAID', 'EXTERNAL')).toBe(false);
+    expect(raw('MARKED_AS_PAID', 'EXTERNAL')).toBe(false);
+    expect(raw('PAID')).toBe(false);
+    expect(raw('PARTIALLY_PAID', 'PAYPAL')).toBe(false);
+  });
   it('maps every PayPal status to one of Penny\'s', () => {
     expect(mapInvoiceStatus('PAID')).toBe('paid');
     expect(mapInvoiceStatus('MARKED_AS_PAID')).toBe('paid');

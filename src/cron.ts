@@ -44,7 +44,7 @@ export async function pollWaiting(env: Env, limit = 10, minAgeMs = 5 * 60_000): 
       const inv = await provider.getInvoice(after_invoice);
       const page = `${env.PUBLIC_URL}/p/invoice/${encodeURIComponent(inv.id)}?k=${encodeURIComponent(t.pageKey)}`;
       if (inv.status === 'paid') {
-        const r = await releaseFor(env, t, provider, inv.id);
+        const r = await releaseFor(env, t, provider, inv.id, { invoice: inv });
         if (r) await createAlert(env, t.id, { title: `Invoice ${inv.number} (${inv.customer.name || inv.customer.email}) was paid`, detail: r.detail, page: r.page ?? page });
       } else if (inv.status === 'cancelled' || inv.status === 'refunded') {
         const off = await callOffFor(env, t, inv.id, `The invoice it waited on was ${inv.status}.`);

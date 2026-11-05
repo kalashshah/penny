@@ -27,6 +27,11 @@ export interface Invoice {
   paid?: Money;
   /** Provider ids of the payments received against it (what a refund targets). */
   paymentIds: string[];
+  /**
+   * Paid in full, and every payment on it went through the rail itself (not cash, cheque or "marked as paid").
+   * Only then is the money in the balance a payout would come from. Unknown counts as no.
+   */
+  paidViaRail?: boolean;
 }
 
 export interface InvoiceInput {

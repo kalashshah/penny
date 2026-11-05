@@ -367,8 +367,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         await provider.recordInvoicePayment(inv.id, { method: a.method, amount: r.money, date, note: a.note, idempotencyKey });
         const after = await provider.getInvoice(inv.id);
         // Paid in full outside PayPal is still paid, so what waited on this invoice is released now. But that money is
-        // not in the PayPal balance the payout would come from, so every released payout waits for a yes.
-        const released = after.status === 'paid' ? await releaseFor(deps.env, tenant, provider, inv.id, { alwaysAsk: true }) : null;
+        // not in the PayPal balance the payout would come from, so releaseFor has every released payout wait for a yes.
+        const released = await releaseFor(deps.env, tenant, provider, inv.id, { invoice: after });
         const left = after.status === 'paid' ? 'it is now paid in full' : `${fmtMoney(after.due)} is still due`;
         return {
           recorded: true,

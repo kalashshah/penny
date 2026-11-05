@@ -4,7 +4,7 @@ import type { Env } from '../src/env';
 import { handleWebhook } from '../src/events';
 import type { Memory } from '../src/memory';
 import { toEvent } from '../src/providers/paypal';
-import type { PaymentProvider } from '../src/providers/types';
+import type { Invoice, PaymentProvider } from '../src/providers/types';
 import type { Tenant } from '../src/tenants';
 import { fakeD1 } from './helpers/d1';
 
@@ -15,9 +15,14 @@ const ctx = { waitUntil: () => {} };
 function webhookRig() {
   const env = { DB: fakeD1(), PUBLIC_URL: 'https://penny.test', WEBHOOK_VERIFY: 'off' } as Env;
   const calls = { payout: 0 };
+  // What getInvoice answers: by default paid in full through PayPal.
+  const invoices: Record<string, Partial<Invoice>> = {};
   const provider = {
     name: 'paypal',
     parseEvent: toEvent,
+    async getInvoice(id: string): Promise<Invoice> {
+      return { id, number: id, status: 'paid', customer: { name: 'Acme', email: 'ap@acme.test' }, total: { value: 1000, currency: 'USD' }, due: { value: 0, currency: 'USD' }, items: [], paymentIds: ['CAP1'], paidViaRail: true, ...invoices[id] };
+    },
     async payout({ amount, recipientEmail }: { amount: { value: number; currency: string }; recipientEmail: string }) {
       calls.payout++;
       return { id: 'PB-1', status: 'pending', amount, recipient: recipientEmail };
@@ -25,7 +30,7 @@ function webhookRig() {
   } as unknown as PaymentProvider;
   const deliver = async (body: unknown) => (await handleWebhook(env, tenant, provider, memory, new Request('https://penny.test/webhooks/paypal/t_1', { method: 'POST', body: JSON.stringify(body) }), ctx)).json() as Promise<Record<string, unknown>>;
   const alerts = async () => (await env.DB.prepare('SELECT * FROM alerts WHERE tenant_id = ?').bind(tenant.id).all<{ title: string; detail: string }>()).results;
-  return { env, provider, calls, deliver, alerts, tenant };
+  return { env, provider, calls, deliver, alerts, tenant, invoices };
 }
 
 const paid = { id: 'WH-1', event_type: 'INVOICING.INVOICE.PAID', resource: { invoice: { id: 'INV2-1', detail: { invoice_number: '0042' }, amount: { currency_code: 'USD', value: '1000.00' } } } };
@@ -97,5 +102,18 @@ describe('handleWebhook', () => {
     await deliver(item('WH-9', 'RETURNED', out.proposal.id));
     await deliver(item('WH-10', 'SUCCEEDED', out.proposal.id));
     expect((await approvals.get(out.proposal.id))?.status).toBe('failed');
+  });
+
+  it('a paid webhook releases for a yes when the invoice was marked paid outside PayPal, and not at all when partly paid', async () => {
+    const { env, deliver, calls, invoices } = webhookRig();
+    const approvals = new Approvals(env.DB, 't_1');
+    const p = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
+    invoices['INV2-1'] = { status: 'partially_paid', due: { value: 600, currency: 'USD' }, paidViaRail: false };
+    await deliver(paid);
+    expect((await approvals.get(p.id))?.status).toBe('waiting');
+    invoices['INV2-1'] = { status: 'paid', paidViaRail: false };
+    await deliver({ ...paid, id: 'WH-1b' });
+    expect((await approvals.get(p.id))?.status).toBe('pending');
+    expect(calls.payout).toBe(0);
   });
 });

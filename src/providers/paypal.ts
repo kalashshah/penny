@@ -379,7 +379,7 @@ interface RawInvoice {
   items?: { name: string; quantity: string; unit_amount?: RawMoney }[];
   amount?: RawMoney;
   due_amount?: RawMoney;
-  payments?: { paid_amount?: RawMoney; transactions?: { payment_id?: string; payment_date?: string }[] };
+  payments?: { paid_amount?: RawMoney; transactions?: { payment_id?: string; payment_date?: string; type?: string; method?: string }[] };
 }
 interface RawDispute {
   dispute_id: string;
@@ -438,6 +438,8 @@ export function toInvoice(raw: RawInvoice): Invoice {
     items: (raw.items ?? []).map((i) => ({ name: i.name, quantity: Number(i.quantity), unitAmount: money(i.unit_amount) ?? { value: 0, currency } })),
     paid: money(raw.payments?.paid_amount),
     paymentIds: txns.map((t) => t.payment_id).filter((x): x is string => Boolean(x)),
+    // PAID (not MARKED_AS_PAID / PAID_EXTERNAL), and each payment a PayPal one rather than an EXTERNAL record.
+    paidViaRail: raw.status === 'PAID' && txns.length > 0 && txns.every((t) => (t.type ?? t.method ?? '').toUpperCase() === 'PAYPAL'),
   };
 }
 
