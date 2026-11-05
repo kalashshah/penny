@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PayPalProvider, carrierFor, evidenceInput, mapInvoiceStatus, toDispute, toEvent, toInvoice, toPayoutBatch } from '../src/providers/paypal';
+import { PayPalProvider, carrierFor, evidenceMultipart, evidenceInput, mapInvoiceStatus, toDispute, toEvent, toInvoice, toPayoutBatch } from '../src/providers/paypal';
 
 describe('toInvoice', () => {
   it('maps the fields Penny reads', () => {
@@ -76,6 +76,11 @@ describe('dispute evidence', () => {
       evidences: [{ evidence_type: 'PROOF_OF_FULFILLMENT', evidence_info: { tracking_info: [{ carrier_name: 'FEDEX', tracking_number: '1Z999' }] }, notes: 'Delivered 3 Nov' }],
     });
     expect(evidenceInput({ kind: 'other', notes: 'Signed contract attached to the thread.' })).toEqual({ evidences: [{ evidence_type: 'OTHER', notes: 'Signed contract attached to the thread.' }] });
+  });
+  it('sends the input as one JSON part with no filename, as PayPal documents', () => {
+    const b = evidenceMultipart({ evidences: [] }, 'BOUND');
+    expect(b.contentType).toBe('multipart/form-data; boundary=BOUND');
+    expect(b.body).toBe('--BOUND\r\nContent-Disposition: form-data; name="input"\r\nContent-Type: application/json\r\n\r\n{"evidences":[]}\r\n--BOUND--\r\n');
   });
   it('names unknown carriers as OTHER', () => {
     expect(carrierFor('ups')).toEqual({ carrier_name: 'UPS' });

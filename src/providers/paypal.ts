@@ -103,13 +103,13 @@ export class PayPalProvider implements PaymentProvider {
   }
 
   private async api<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
-    // FormData carries its own multipart content-type (with the boundary), so it must not get the JSON one.
-    const form = body instanceof FormData;
+    // A RawBody carries its own content-type (a multipart one, with the boundary), so it must not get the JSON one.
+    const raw = body instanceof RawBody;
     const send = async () =>
       fetch(`${this.host}${path}`, {
         method,
-        headers: { Authorization: `Bearer ${await this.token()}`, ...(form ? {} : { 'content-type': 'application/json' }), ...headers },
-        body: body === undefined ? undefined : form ? body : JSON.stringify(body),
+        headers: { Authorization: `Bearer ${await this.token()}`, 'content-type': raw ? body.contentType : 'application/json', ...headers },
+        body: body === undefined ? undefined : raw ? body.body : JSON.stringify(body),
       });
     let res = await send();
     // A cached token keeps the scopes it was issued with; one minted after a feature is enabled on the app has them.
@@ -240,10 +240,7 @@ export class PayPalProvider implements PaymentProvider {
   }
 
   async provideDisputeEvidence(id: string, evidence: DisputeEvidence): Promise<void> {
-    // provide-evidence is multipart/form-data only: the evidence JSON goes in a part named `input` (files would be file1, file2...).
-    const form = new FormData();
-    form.append('input', new Blob([JSON.stringify(evidenceInput(evidence))], { type: 'application/json' }), 'input.json');
-    await this.api('POST', `/v1/customer/disputes/${encodeURIComponent(id)}/provide-evidence`, form);
+    await this.api('POST', `/v1/customer/disputes/${encodeURIComponent(id)}/provide-evidence`, evidenceMultipart(evidenceInput(evidence)));
   }
 
   // ---- money out -----------------------------------------------------------
@@ -509,6 +506,25 @@ const CARRIERS: Record<string, string> = { UPS: 'UPS', USPS: 'USPS', FEDEX: 'FED
 export function carrierFor(name: string): { carrier_name: string; carrier_name_other?: string } {
   const code = CARRIERS[name.toUpperCase().replace(/[^A-Z]/g, '')];
   return code ? { carrier_name: code } : { carrier_name: 'OTHER', carrier_name_other: name.trim() || 'Other' };
+}
+
+/** A request body sent as is, with its own content-type. */
+export class RawBody {
+  constructor(
+    readonly body: string,
+    readonly contentType: string,
+  ) {}
+}
+
+/**
+ * provide-evidence is multipart/form-data only, with the evidence JSON in a part named `input` (files would be file1,
+ * file2...). PayPal documents it as `-F 'input={...};type=application/json'`: a part with a JSON content-type and no
+ * filename. FormData cannot say that: a string field gets no content-type, and a Blob gets a filename ("blob" if none
+ * is given), which reads as a file upload. So the body is built by hand to be exactly the documented part.
+ */
+export function evidenceMultipart(input: unknown, boundary = `penny-${crypto.randomUUID()}`): RawBody {
+  const body = `--${boundary}\r\nContent-Disposition: form-data; name="input"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(input)}\r\n--${boundary}--\r\n`;
+  return new RawBody(body, `multipart/form-data; boundary=${boundary}`);
 }
 
 /** The `input` part of provide-evidence: one evidence, PROOF_OF_FULFILLMENT with tracking or OTHER with notes. */
