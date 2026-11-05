@@ -29,7 +29,7 @@ export async function updateSettings(_prev: SettingsResult | null, form: FormDat
     }
     case 'demo': {
       const r = await tenants.connectDemo(t);
-      result = r.ok ? { notes: r.notes } : { error: r.notes.join(' ') };
+      result = r.ok ? { notes: r.notes } : { error: `The demo sandbox could not be reached: ${r.notes.join(' ')}` };
       break;
     }
     case 'disconnect':
