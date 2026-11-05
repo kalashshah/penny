@@ -105,6 +105,12 @@ export class Tenants {
     return r ? fromRow(r) : null;
   }
 
+  /** Tenants with PayPal connected, oldest first, for the cron. */
+  async listConnected(limit: number): Promise<Tenant[]> {
+    const r = await this.env.DB.prepare('SELECT * FROM tenants WHERE paypal_client_id IS NOT NULL AND paypal_secret_ct IS NOT NULL ORDER BY created_at LIMIT ?').bind(limit).all<Row>();
+    return (r.results ?? []).map(fromRow);
+  }
+
   async ensureForUser(user: { id: string; email: string; name?: string | null }): Promise<Tenant> {
     const existing = await this.forUser(user.id);
     if (existing) return existing;
