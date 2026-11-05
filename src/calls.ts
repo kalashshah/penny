@@ -87,21 +87,26 @@ export async function ingestEndedCalls(env: Env, memoryFor: (tenantId: string) =
   let done = 0;
   const headers = { Authorization: `Bearer ${env.LLAMACALLS_KEY}` };
   for (const call of pending) {
-    const meta = await fetch(`${env.LLAMACALLS_URL}/api/calls/${encodeURIComponent(call.room)}`, { headers });
-    if (!meta.ok) continue;
-    const { call: info } = (await meta.json()) as { call?: { endedAt?: number | null } };
-    if (!info?.endedAt) continue;
-    const tx = await fetch(`${env.LLAMACALLS_URL}/api/calls/${encodeURIComponent(call.room)}/transcript`, { headers });
-    const text = tx.ok ? transcriptText(await tx.text()) : '';
-    if (text.split('\n').length >= 3) {
-      const memory = await memoryFor(call.tenant_id);
-      if (memory.enabled) {
-        const when = new Date(call.started_at).toUTCString();
-        await memory.remember(`Call between Penny (the AI CFO) and the founders on ${when}. Keep decisions, instructions to Penny, vendor/customer facts and deadlines.\n\n${text.slice(0, 20_000)}`);
+    // One call's failure (a LlamaCalls hiccup, memory down) is retried next run and never holds up the rest.
+    try {
+      const meta = await fetch(`${env.LLAMACALLS_URL}/api/calls/${encodeURIComponent(call.room)}`, { headers });
+      if (!meta.ok) continue;
+      const { call: info } = (await meta.json()) as { call?: { endedAt?: number | null } };
+      if (!info?.endedAt) continue;
+      const tx = await fetch(`${env.LLAMACALLS_URL}/api/calls/${encodeURIComponent(call.room)}/transcript`, { headers });
+      const text = tx.ok ? transcriptText(await tx.text()) : '';
+      if (text.split('\n').length >= 3) {
+        const memory = await memoryFor(call.tenant_id);
+        if (memory.enabled) {
+          const when = new Date(call.started_at).toUTCString();
+          await memory.remember(`Call between Penny (the AI CFO) and the founders on ${when}. Keep decisions, instructions to Penny, vendor/customer facts and deadlines.\n\n${text.slice(0, 20_000)}`);
+        }
       }
+      await env.DB.prepare('UPDATE calls SET ended_at = ?, ingested = 1 WHERE room = ?').bind(info.endedAt, call.room).run();
+      done++;
+    } catch (e) {
+      console.error('ingest_call_failed', { room: call.room, error: String(e) });
     }
-    await env.DB.prepare('UPDATE calls SET ended_at = ?, ingested = 1 WHERE room = ?').bind(info.endedAt, call.room).run();
-    done++;
   }
   return done;
 }
