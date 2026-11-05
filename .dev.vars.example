@@ -1,0 +1,23 @@
+# Copy to .dev.vars for `pnpm dev` / `pnpm preview`; `pnpm run secrets` pushes the same to production.
+# `pnpm run setup` fills in the two generated secrets below if they are blank.
+BETTER_AUTH_SECRET=
+PENNY_MASTER_KEY=
+# --- Calls: a LlamaCalls API key (llamacalls.com → API keys). Penny pays for her customers' calls.
+LLAMACALLS_KEY=
+# --- Memory: a MemoryHQ workspace id and an API key for it (Settings → API Keys). Each business
+# is an end user inside that one workspace. Blank = memory off.
+MEMORYHQ_WORKSPACE=
+MEMORYHQ_KEY=
+# --- Login: email codes always work (logged to the console without an EMAIL binding). Google is optional:
+# redirect URI is <PUBLIC_URL>/api/auth/callback/google
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+EMAIL_FROM=
+# --- Optional: the Reports page (AG Studio). Licence from AG Grid; blank = watermark.
+AG_STUDIO_LICENSE=
+# OpenAI key for the Reports page's AI assistant (the worker proxies it; never sent to browsers). Blank = no assistant.
+OPENAI_API_KEY=
+# --- Local only: local runs read PUBLIC_URL from here, overriding wrangler.jsonc
+PUBLIC_URL=http://localhost:8787
+# Optional: "off" skips webhook signature verification (local demos only)
+WEBHOOK_VERIFY=

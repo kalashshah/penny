@@ -1,0 +1,140 @@
+{
+ "checkin": {
+  "clipId": "3edb18cd6b1046db87a6eb42a11d95e3",
+  "durationMs": 31760,
+  "turns": [
+   {
+    "speaker": "you",
+    "text": "Penny, how are we doing this month?",
+    "start": 0.4,
+    "end": 2.255
+   },
+   {
+    "speaker": "agent",
+    "text": "Good month so far. We've collected eleven thousand two hundred, and six thousand four hundred is still outstanding. Two invoices are overdue. The big one is Acme's October sprint, twelve days late. I've put it all on screen.",
+    "start": 2.605,
+    "end": 17.277
+   },
+   {
+    "speaker": "you",
+    "text": "Chase Acme.",
+    "start": 17.627,
+    "end": 18.599
+   },
+   {
+    "speaker": "agent",
+    "text": "Done. I've sent Dana at Acme a reminder, with a note that the sprint was signed off on the fourth. And I'll remember that Acme pays late, so I'll chase them on day ten next time.",
+    "start": 18.949,
+    "end": 30.928
+   }
+  ]
+ },
+ "forecast": {
+  "clipId": "a3dfe75ec9bb43d29b57a8645052ea4a",
+  "durationMs": 37560,
+  "turns": [
+   {
+    "speaker": "you",
+    "text": "Penny, will we make payroll on the thirtieth?",
+    "start": 0.4,
+    "end": 3.044
+   },
+   {
+    "speaker": "agent",
+    "text": "Yes, comfortably. There's fifty-nine hundred in PayPal today, and sixty-four hundred coming in before then. I've dated Acme's invoice twelve days late, because that's how they usually pay. Here's the month.",
+    "start": 3.394,
+    "end": 14.258
+   },
+   {
+    "speaker": "you",
+    "text": "What if Acme slips another two weeks?",
+    "start": 14.608,
+    "end": 16.788
+   },
+   {
+    "speaker": "agent",
+    "text": "Then payroll still clears, but it gets tight. The low point drops to about eleven hundred, the day payroll goes out.",
+    "start": 17.138,
+    "end": 24.472
+   },
+   {
+    "speaker": "you",
+    "text": "Okay. Pay Sam his eight hundred when Acme pays.",
+    "start": 24.822,
+    "end": 28.21
+   },
+   {
+    "speaker": "agent",
+    "text": "Done. Sam's eight hundred is waiting on Acme's invoice. It's over your limit, so when the money lands, I'll call you for a yes.",
+    "start": 28.56,
+    "end": 36.73
+   }
+  ]
+ },
+ "dispute": {
+  "clipId": "ba5b17d646ac4b42ac62fc1f09b15e89",
+  "durationMs": 27640,
+  "turns": [
+   {
+    "speaker": "agent",
+    "text": "Hi, it's Penny. A buyer just opened a dispute on the one hundred and twenty dollar order. They say it never arrived. We have five days to respond. Want me to walk you through it?",
+    "start": 0.4,
+    "end": 10.057
+   },
+   {
+    "speaker": "you",
+    "text": "Yeah. What do we have?",
+    "start": 10.407,
+    "end": 11.936
+   },
+   {
+    "speaker": "agent",
+    "text": "It shipped on the second and was delivered on the fifth, and someone signed for it. I've drafted a reply with the tracking and the signature. It's on screen.",
+    "start": 12.286,
+    "end": 21.06
+   },
+   {
+    "speaker": "you",
+    "text": "Looks good. Send it.",
+    "start": 21.41,
+    "end": 23.265
+   },
+   {
+    "speaker": "agent",
+    "text": "Sent. I'll let you know as soon as PayPal decides.",
+    "start": 23.615,
+    "end": 26.816
+   }
+  ]
+ },
+ "pay": {
+  "clipId": "3512ded7b79c41a083f13dd8ca03cae6",
+  "durationMs": 23240,
+  "turns": [
+   {
+    "speaker": "you",
+    "text": "Pay Sam four hundred for the logo work.",
+    "start": 0.4,
+    "end": 2.626
+   },
+   {
+    "speaker": "agent",
+    "text": "That's four hundred dollars to sam at studio dot co, with the note logo work. It's over your approval limit, so I need a clear yes from you.",
+    "start": 2.976,
+    "end": 12.261
+   },
+   {
+    "speaker": "you",
+    "text": "Yes, go ahead.",
+    "start": 12.611,
+    "end": 13.955
+   },
+   {
+    "speaker": "agent",
+    "text": "Paid. The payout is processing. I've also noted that Sam gets paid on delivery, so next time I'll just ask when the work's in.",
+    "start": 14.305,
+    "end": 22.429
+   }
+  ]
+ }
+}

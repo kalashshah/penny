@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "penny",
+  // OpenNext's Next.js handler plus the cron (worker.ts); `opennextjs-cloudflare build` writes .open-next/.
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  // `wrangler d1 create penny` and paste the id it prints.
+  "d1_databases": [{ "binding": "DB", "database_name": "penny", "database_id": "699caeff-421e-48ab-abe2-2fe527199140" }],
+  // Same Cloudflare account as MemoryHQ and a verified Email Sending domain? `pnpm run deploy:me`
+  // switches these two on (workers.dev→workers.dev fetches are blocked within one account, error 1042).
+  // "services": [{ "binding": "MEMORYHQ", "service": "memoryhq" }],
+  // "send_email": [{ "name": "EMAIL", "remote": true }],
+  "routes": [{ "pattern": "penny.keronlabs.com", "custom_domain": true }],
+  // Every five minutes: file ended calls' transcripts into memory, expire stale approvals.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    // Cookies, OAuth callbacks and PayPal webhooks are issued for this origin. Change it to yours.
+    "PUBLIC_URL": "https://penny.keronlabs.com",
+    "MEMORYHQ_URL": "https://memoryhq.kalashshah47.workers.dev",
+    "LLAMACALLS_URL": "https://llamacalls.com",
+    // Penny's face (LlamaCalls catalogue "Female").
+    "LLAMACALLS_AVATAR_ID": "8b86dda1-98ed-4acd-8a4e-b1a00ba69268",
+    "DEFAULT_CURRENCY": "USD",
+    "APPROVAL_THRESHOLD": "100"
+  },
+  // Secrets (`pnpm run secrets` pushes .dev.vars): BETTER_AUTH_SECRET PENNY_MASTER_KEY LLAMACALLS_KEY
+  // [MEMORYHQ_WORKSPACE MEMORYHQ_KEY GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET EMAIL_FROM AG_STUDIO_LICENSE OPENAI_API_KEY]
+  "observability": { "enabled": true }
+}

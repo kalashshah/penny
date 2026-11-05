@@ -1,0 +1,44 @@
+{
+  "name": "penny",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Penny: an AI CFO that joins your calls, remembers, and moves money on PayPal (provider-pluggable).",
+  "scripts": {
+    "dev": "next dev -p 8787",
+    "build": "next build",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:local": "wrangler d1 migrations apply penny --local",
+    "db:remote": "wrangler d1 migrations apply penny --remote",
+    "setup": "node scripts/setup.mjs",
+    "secrets": "node scripts/push-secrets.mjs",
+    "seed": "esbuild scripts/seed.ts --bundle --platform=node --format=esm --log-level=warning | node --input-type=module -",
+    "deploy:me": "sed -e 's#// \"services\"#\"services\"#' -e 's#// \"send_email\"#\"send_email\"#' wrangler.jsonc > wrangler.me.jsonc && opennextjs-cloudflare build --config wrangler.me.jsonc && opennextjs-cloudflare deploy --config wrangler.me.jsonc"
+  },
+  "dependencies": {
+    "@bryntum/scheduler": "npm:@bryntum/scheduler-trial@7.3.7",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@opennextjs/cloudflare": "1.20.11",
+    "ag-grid-community": "36.2.0",
+    "ag-grid-react": "36.2.0",
+    "ag-studio": "3.0.0",
+    "ag-studio-react": "3.0.0",
+    "better-auth": "^1.7.7",
+    "next": "16.3.8",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261013.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4",
+    "wrangler": "^4.150.0"
+  }
+}
