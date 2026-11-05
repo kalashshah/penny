@@ -76,7 +76,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   const env = { ...deps.env, PUBLIC_URL: deps.env.PUBLIC_URL };
   const withKey = (path: string) => `${path}${path.includes('?') ? '&' : '?'}k=${encodeURIComponent(tenant.pageKey)}`;
   const today = () => new Date().toISOString().slice(0, 10);
-  const money = { approvals, provider, threshold };
+  const money = { approvals, provider, threshold, currency };
 
   // ---- looking ---------------------------------------------------------------
 
@@ -247,7 +247,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
     'pay',
     {
-      description: `Pay someone (a contractor, a vendor, a refund by email) from the company account. Above ${currency} ${threshold} this returns needs_approval and a proposal_id: read the amount and recipient back, ask "Do you approve?", and only then call confirm_action.`,
+      description: `Pay someone (a contractor, a vendor, a refund by email) from the company account. Above ${currency} ${threshold}, or in any other currency, this returns needs_approval and a proposal_id: read the amount and recipient back, ask "Do you approve?", and only then call confirm_action.`,
       inputSchema: { recipient_email: z.string().email(), amount: z.number().positive(), currency: z.string().length(3).optional(), note: z.string().max(200) },
     },
     (a) =>

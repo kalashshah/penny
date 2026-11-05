@@ -27,8 +27,17 @@ export const PROPOSAL_TTL_MS = 30 * 60_000;
 /** One released by a customer paying arrives while nobody is on a call, so it gets a day. */
 export const RELEASED_TTL_MS = 24 * 60 * 60_000;
 
-export function needsApproval(amount: number, threshold: number): boolean {
-  return amount > threshold;
+/** The threshold is in the tenant's currency; an amount in any other is held, never converted and guessed at. */
+export function needsApproval(money: Money, threshold: number, currency: string): boolean {
+  return money.currency.toUpperCase() !== currency.toUpperCase() || money.value > threshold;
+}
+
+export interface MoneyDeps {
+  approvals: Approvals;
+  provider: PaymentProvider;
+  threshold: number;
+  /** The tenant's currency, which the threshold is in. */
+  currency: string;
 }
 
 /** What a decision does to a proposal. Pure; the one piece of this file with a test. */
@@ -189,23 +198,23 @@ export interface ActionOutcome {
 
 /** The whole money-out path: propose, then run it now if small or hold it for a yes. */
 export async function runOrHold(
-  deps: { approvals: Approvals; provider: PaymentProvider; threshold: number },
+  deps: MoneyDeps,
   kind: ActionKind,
   description: string,
   money: Money,
   input: Record<string, unknown>,
 ): Promise<ActionOutcome> {
   const proposal = await deps.approvals.create(kind, description, money, input);
-  if (needsApproval(money.value, deps.threshold)) return { status: 'needs_approval', proposal };
+  if (needsApproval(money, deps.threshold, deps.currency)) return { status: 'needs_approval', proposal };
   return (await claimAndSettle(deps, proposal.id, 'auto (under threshold)')) ?? { status: 'failed', proposal, result: 'The action vanished before it ran.' };
 }
 
 /** A customer paid: run what was waiting on it if small, otherwise leave it pending for a yes. */
-export async function releaseWaiting(deps: { approvals: Approvals; provider: PaymentProvider; threshold: number }, invoiceId: string): Promise<ActionOutcome[]> {
+export async function releaseWaiting(deps: MoneyDeps, invoiceId: string): Promise<ActionOutcome[]> {
   const released = await deps.approvals.release(invoiceId);
   return Promise.all(
     released.map(async (p) => {
-      if (needsApproval(p.amount, deps.threshold)) return { status: 'needs_approval' as const, proposal: p };
+      if (needsApproval({ value: p.amount, currency: p.currency }, deps.threshold, deps.currency)) return { status: 'needs_approval' as const, proposal: p };
       return (await claimAndSettle(deps, p.id, 'auto (under threshold, invoice paid)')) ?? { status: 'failed' as const, proposal: p, result: 'The action vanished before it ran.' };
     }),
   );

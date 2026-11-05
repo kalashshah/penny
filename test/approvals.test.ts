@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Approvals, PROPOSAL_TTL_MS, confirm, decideTransition, needsApproval, releaseWaiting, type Proposal } from '../src/approvals';
+import { Approvals, PROPOSAL_TTL_MS, confirm, decideTransition, needsApproval, releaseWaiting, runOrHold, type Proposal } from '../src/approvals';
 import type { PaymentProvider } from '../src/providers/types';
 import { fakeD1 } from './helpers/d1';
 
@@ -7,9 +7,14 @@ const base: Proposal = { id: 'ap_1', kind: 'payout', description: 'Pay USD 500.0
 
 describe('needsApproval', () => {
   it('holds anything strictly over the threshold', () => {
-    expect(needsApproval(100, 100)).toBe(false);
-    expect(needsApproval(100.01, 100)).toBe(true);
-    expect(needsApproval(5, 0)).toBe(true);
+    const usd = (value: number) => ({ value, currency: 'USD' });
+    expect(needsApproval(usd(100), 100, 'USD')).toBe(false);
+    expect(needsApproval(usd(100.01), 100, 'USD')).toBe(true);
+    expect(needsApproval(usd(5), 0, 'USD')).toBe(true);
+  });
+  it('holds any amount in a currency other than the threshold\'s', () => {
+    expect(needsApproval({ value: 5, currency: 'JPY' }, 100, 'USD')).toBe(true);
+    expect(needsApproval({ value: 5, currency: 'usd' }, 100, 'USD')).toBe(false);
   });
 });
 
@@ -116,7 +121,7 @@ describe('confirm (against SQLite)', () => {
     const { approvals, provider, calls } = setup();
     const p = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
     expect((await confirm({ approvals, provider }, p.id, 'Alex'))?.status).toBe('unchanged');
-    const deps = { approvals, provider, threshold: 100 };
+    const deps = { approvals, provider, threshold: 100, currency: 'USD' };
     const [first, second] = await Promise.all([releaseWaiting(deps, 'INV2-1'), releaseWaiting(deps, 'INV2-1')]);
     expect([...first, ...second].map((o) => o.status)).toEqual(['done']);
     expect(calls.payout).toBe(1);
@@ -125,9 +130,22 @@ describe('confirm (against SQLite)', () => {
   it('pay-when-paid: a release over the threshold asks, then a yes pays', async () => {
     const { approvals, provider, calls } = setup();
     const p = await approvals.create('payout', 'Pay later', { value: 500, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
-    const [o] = await releaseWaiting({ approvals, provider, threshold: 100 }, 'INV2-1');
+    const [o] = await releaseWaiting({ approvals, provider, threshold: 100, currency: 'USD' }, 'INV2-1');
     expect(o.status).toBe('needs_approval');
     expect((await confirm({ approvals, provider }, p.id, 'Alex'))?.status).toBe('done');
+    expect(calls.payout).toBe(1);
+  });
+});
+
+describe('runOrHold', () => {
+  it('runs a small same-currency action, holds a small foreign-currency one', async () => {
+    const approvals = new Approvals(fakeD1(), 't_1');
+    const { provider, calls } = countingProvider();
+    const deps = { approvals, provider, threshold: 100, currency: 'USD' };
+    const small = await runOrHold(deps, 'payout', 'Pay 50', { value: 50, currency: 'USD' }, { recipientEmail: 'a@example.com' });
+    expect(small.status).toBe('done');
+    const foreign = await runOrHold(deps, 'payout', 'Pay 50 EUR', { value: 50, currency: 'EUR' }, { recipientEmail: 'a@example.com' });
+    expect(foreign.status).toBe('needs_approval');
     expect(calls.payout).toBe(1);
   });
 });
