@@ -17,6 +17,10 @@ EMAIL_FROM=
 AG_STUDIO_LICENSE=
 # OpenAI key for the Reports page's AI assistant (the worker proxies it; never sent to browsers). Blank = no assistant.
 OPENAI_API_KEY=
+# --- Optional: a sandbox PayPal app anyone signed in can borrow from Settings ("Use the demo sandbox"),
+# so judges can try Penny without creating a PayPal app. Seed it once: connect a tenant to it, then `pnpm run seed <tenantId>`.
+DEMO_PAYPAL_CLIENT_ID=
+DEMO_PAYPAL_CLIENT_SECRET=
 # --- Local only: local runs read PUBLIC_URL from here, overriding wrangler.jsonc
 PUBLIC_URL=http://localhost:8787
 # Optional: "off" skips webhook signature verification (local demos only)

@@ -16,6 +16,10 @@ export interface SettingsView {
   memoryOn: boolean;
   tenantId: string;
   publicUrl: string;
+  /** The deployment offers a shared sandbox app (no PayPal app of your own needed). */
+  demoAvailable: boolean;
+  /** Connected to that shared sandbox. */
+  onDemo: boolean;
 }
 
 function Field({ name, label, ...input }: { name: string; label: string } & InputHTMLAttributes<HTMLInputElement>) {
@@ -64,8 +68,14 @@ export function SettingsForms({ v }: { v: SettingsView }) {
         {connected && (
           <>
             <p className="sub" style={{ margin: '0 0 12px' }}>
-              App <code>{v.clientIdPrefix}…</code> connected {when(v.connectedAt)}. Webhook{' '}
-              {v.webhookOn ? 'registered.' : 'not registered: deploy Penny on https, then reconnect.'}
+              {v.onDemo ? (
+                <>Penny&apos;s shared demo sandbox, connected {when(v.connectedAt)}. Live alerts are off on the shared sandbox; connect your own app below to get them.</>
+              ) : (
+                <>
+                  App <code>{v.clientIdPrefix}…</code> connected {when(v.connectedAt)}. Webhook{' '}
+                  {v.webhookOn ? 'registered.' : 'not registered: deploy Penny on https, then reconnect.'}
+                </>
+              )}
             </p>
             <form
               action={action}
@@ -76,6 +86,20 @@ export function SettingsForms({ v }: { v: SettingsView }) {
               <input type="hidden" name="intent" value="disconnect" />
               <button className="btn sm danger" disabled={pending}>
                 Disconnect
+              </button>
+            </form>
+            <hr style={{ border: 0, borderTop: '1px solid var(--line)', margin: '18px 0' }} />
+          </>
+        )}
+        {v.demoAvailable && !connected && (
+          <>
+            <form action={action}>
+              <input type="hidden" name="intent" value="demo" />
+              <p className="sub" style={{ margin: '0 0 12px' }}>
+                Just trying Penny? Use her demo sandbox: a small studio&apos;s customers, invoices and disputes on PayPal&apos;s sandbox, no PayPal app or real money needed.
+              </p>
+              <button className="btn dark" disabled={pending}>
+                Use the demo sandbox
               </button>
             </form>
             <hr style={{ border: 0, borderTop: '1px solid var(--line)', margin: '18px 0' }} />

@@ -55,7 +55,7 @@ export async function Dashboard({ owner, openAlert }: { owner: Owner; openAlert?
       {!connected && (
         <Card title="Connect PayPal to get started" d={0.05} style={{ borderColor: 'var(--ink)' }}>
           <p className="sub" style={{ margin: '0 0 14px' }}>
-            Penny needs your PayPal app&apos;s client id and secret, sandbox or live, to see invoices, disputes and payouts. Two minutes.
+            Penny needs your PayPal app&apos;s client id and secret, sandbox or live, to see invoices, disputes and payouts. Two minutes. Just looking? Settings has a one-click demo sandbox.
           </p>
           <Link className="btn dark" href="/settings">
             Open settings

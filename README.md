@@ -91,7 +91,7 @@ pnpm run db:local && pnpm dev                       # http://localhost:8787/logi
 pnpm preview                                        # the built worker on workerd, as it runs in production
 ```
 
-Login codes are printed to the terminal when no email binding is configured. Sign in, open **Settings**, paste a PayPal sandbox app's client id and secret (enable Invoicing, Payouts, Transaction Search and Disputes on the app; create a sandbox *personal* account to pay invoices with), and press **Call Penny**.
+Login codes are printed to the terminal when no email binding is configured. To let people try Penny without a PayPal app of their own, set `DEMO_PAYPAL_CLIENT_ID` / `DEMO_PAYPAL_CLIENT_SECRET` to a sandbox app: Settings then offers **Use the demo sandbox** (shared by everyone who picks it, webhooks off). Seed it once with `pnpm run seed <tenantId>` from a tenant connected to it. Sign in, open **Settings**, paste a PayPal sandbox app's client id and secret (enable Invoicing, Payouts, Transaction Search and Disputes on the app; create a sandbox *personal* account to pay invoices with), and press **Call Penny**.
 
 To put Penny on real calls she must be reachable from the internet (LlamaCalls connects to `/mcp`; PayPal posts webhooks):
 

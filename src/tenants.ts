@@ -175,7 +175,15 @@ export class Tenants {
    * webhook (when Penny is reachable from the internet).
    * Returns what to tell the user; never stores credentials PayPal rejected.
    */
-  async connectPayPal(t: Tenant, input: { env: 'sandbox' | 'live'; clientId: string; clientSecret: string }): Promise<{ ok: boolean; notes: string[] }> {
+  /** Borrow the deployment's shared sandbox app (DEMO_PAYPAL_*). No webhook: one app holds at most 10, and they are per tenant. */
+  async connectDemo(t: Tenant): Promise<{ ok: boolean; notes: string[] }> {
+    if (!this.env.DEMO_PAYPAL_CLIENT_ID || !this.env.DEMO_PAYPAL_CLIENT_SECRET) return { ok: false, notes: ['This deployment has no demo sandbox.'] };
+    const r = await this.connectPayPal(t, { env: 'sandbox', clientId: this.env.DEMO_PAYPAL_CLIENT_ID, clientSecret: this.env.DEMO_PAYPAL_CLIENT_SECRET }, { webhook: false });
+    if (r.ok) r.notes = ["Connected to Penny's shared demo sandbox: sample customers, invoices and disputes, no real money. Others trying Penny see the same sandbox, and live alerts are off; connect your own PayPal app for those."];
+    return r;
+  }
+
+  async connectPayPal(t: Tenant, input: { env: 'sandbox' | 'live'; clientId: string; clientSecret: string }, opts: { webhook?: boolean } = {}): Promise<{ ok: boolean; notes: string[] }> {
     const notes: string[] = [];
     const provider = new PayPalProvider({ clientId: input.clientId, clientSecret: input.clientSecret, env: input.env, businessName: t.businessName });
     try {
@@ -187,7 +195,9 @@ export class Tenants {
     // Reconnecting the same app without registering (locally, or PayPal said no) keeps the webhook it already has;
     // a different app or env cannot verify with the old app's webhook id.
     let webhookId = t.paypalClientId === input.clientId && t.paypalEnv === input.env ? t.paypalWebhookId : null;
-    if (/^https:\/\//.test(this.env.PUBLIC_URL) && !/localhost|127\.0\.0\.1/.test(this.env.PUBLIC_URL)) {
+    if (opts.webhook === false) {
+      webhookId = null;
+    } else if (/^https:\/\//.test(this.env.PUBLIC_URL) && !/localhost|127\.0\.0\.1/.test(this.env.PUBLIC_URL)) {
       try {
         webhookId = await provider.registerWebhook(`${this.env.PUBLIC_URL}/webhooks/paypal/${t.id}`);
         notes.push('Webhook registered: Penny will hear about paid invoices, disputes and payouts.');

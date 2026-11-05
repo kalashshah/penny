@@ -33,6 +33,13 @@ export interface Env {
   /** The one model the assistant may use; defaults to gpt-5.4-mini. */
   OPENAI_MODEL?: string;
 
+  /**
+   * A sandbox PayPal app anyone signed in can borrow ("Use the demo sandbox"), so judges can try Penny without
+   * creating a PayPal app. Shared by every tenant that uses it; webhooks stay off for it (10 per app). Absent: hidden.
+   */
+  DEMO_PAYPAL_CLIENT_ID?: string;
+  DEMO_PAYPAL_CLIENT_SECRET?: string;
+
   /** "off" skips provider webhook signature checks. Local demos only. */
   WEBHOOK_VERIFY?: string;
 

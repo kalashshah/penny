@@ -27,6 +27,11 @@ export async function updateSettings(_prev: SettingsResult | null, form: FormDat
       result = r.ok ? { notes: r.notes } : { error: `PayPal rejected those credentials: ${r.notes.join(' ')}` };
       break;
     }
+    case 'demo': {
+      const r = await tenants.connectDemo(t);
+      result = r.ok ? { notes: r.notes } : { error: r.notes.join(' ') };
+      break;
+    }
     case 'disconnect':
       await tenants.disconnectPayPal(t);
       result = { notes: ['PayPal disconnected.'] };

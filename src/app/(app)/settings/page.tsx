@@ -34,6 +34,8 @@ export default async function SettingsPage() {
           memoryOn: new Memory(env, t.id).enabled,
           tenantId: t.id,
           publicUrl: env.PUBLIC_URL,
+          demoAvailable: Boolean(env.DEMO_PAYPAL_CLIENT_ID && env.DEMO_PAYPAL_CLIENT_SECRET),
+          onDemo: Boolean(env.DEMO_PAYPAL_CLIENT_ID) && t.paypalClientId === env.DEMO_PAYPAL_CLIENT_ID,
         }}
       />
     </>
