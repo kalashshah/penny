@@ -156,11 +156,12 @@ export class PayPalProvider implements PaymentProvider {
           unit_of_measure: 'QUANTITY',
         })),
       },
-      { Prefer: 'return=representation' },
+      { Prefer: 'return=representation', ...(input.idempotencyKey ? { 'PayPal-Request-Id': input.idempotencyKey } : {}) },
     );
     const id = created.id ?? created.href?.split('/').pop();
     if (!id) throw new Error('PayPal created the invoice but returned no id');
-    await this.api('POST', `/v2/invoicing/invoices/${id}/send`, { send_to_recipient: true, send_to_invoicer: false });
+    // A replayed create returns the first invoice, which may already be sent; the same request id makes the send a replay too.
+    await this.api('POST', `/v2/invoicing/invoices/${id}/send`, { send_to_recipient: true, send_to_invoicer: false }, input.idempotencyKey ? { 'PayPal-Request-Id': `${input.idempotencyKey}-send` } : {});
     return this.getInvoice(id);
   }
 

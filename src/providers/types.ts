@@ -36,6 +36,8 @@ export interface InvoiceInput {
   currency: string;
   dueInDays?: number;
   memo?: string;
+  /** The same key within PayPal's window creates (and sends) the invoice once, however often the call is retried. */
+  idempotencyKey?: string;
 }
 
 export interface Dispute {

@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { confirm, runOrHold, type Approvals } from './approvals';
+import { sha256Hex } from './crypto';
 import type { Env } from './env';
 import { describeForecast, formatWhatIf, loadForecast } from './forecast';
 import type { Memory } from './memory';
@@ -66,6 +67,11 @@ function compactDispute(d: Dispute) {
     buyer: d.buyerEmail,
     lastMessages: d.messages.slice(-4).map((m) => `${m.by}: ${m.text}`),
   };
+}
+
+/** Same tenant, same arguments, same minute: same key. */
+export async function invoiceKey(tenantId: string, args: unknown, now = Date.now()): Promise<string> {
+  return `penny-inv-${(await sha256Hex(`${tenantId}|${JSON.stringify(args)}|${Math.floor(now / 60_000)}`)).slice(0, 40)}`;
 }
 
 /**
@@ -227,7 +233,10 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     },
     (a) =>
       guard(async () => {
+        // A voice agent retries a slow tool call; the same invoice asked for again within the minute is one invoice.
+        const idempotencyKey = await invoiceKey(tenant.id, a);
         const i = await provider.createAndSendInvoice({
+          idempotencyKey,
           customerEmail: a.customer_email,
           customerName: a.customer_name,
           items: a.items.map((x) => ({ name: x.name, quantity: x.quantity ?? 1, unitAmount: x.unit_amount })),

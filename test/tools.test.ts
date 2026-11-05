@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Invoice } from '../src/providers/types';
-import { refundable } from '../src/tools';
+import { invoiceKey, refundable } from '../src/tools';
 
 const inv: Invoice = {
   id: 'INV2-1',
@@ -28,5 +28,18 @@ describe('refundable', () => {
   it('refuses unpaid invoices and ones paid outside PayPal', () => {
     expect(refundable({ ...inv, status: 'sent' }).ok).toBe(false);
     expect(refundable({ ...inv, paymentIds: [] }).ok).toBe(false);
+  });
+});
+
+describe('invoiceKey', () => {
+  const args = { customer_email: 'ap@acme.test', items: [{ name: 'Design', unit_amount: 1000 }] };
+  const t = Date.UTC(2026, 10, 5, 12, 0, 10);
+  it('is stable for a retry within the minute and differs otherwise', async () => {
+    const k = await invoiceKey('t_1', args, t);
+    expect(await invoiceKey('t_1', args, t + 30_000)).toBe(k);
+    expect(await invoiceKey('t_1', args, t + 60_000)).not.toBe(k);
+    expect(await invoiceKey('t_2', args, t)).not.toBe(k);
+    expect(await invoiceKey('t_1', { ...args, memo: 'x' }, t)).not.toBe(k);
+    expect(k.length).toBeLessThanOrEqual(108);
   });
 });
