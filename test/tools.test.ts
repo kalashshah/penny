@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Invoice } from '../src/providers/types';
-import { invoiceKey, refundable } from '../src/tools';
+import { describePayout, describeUnsent, invoiceKey, payoutBatchId, refundable } from '../src/tools';
 
 const inv: Invoice = {
   id: 'INV2-1',
@@ -41,5 +41,23 @@ describe('invoiceKey', () => {
     expect(await invoiceKey('t_2', args, t)).not.toBe(k);
     expect(await invoiceKey('t_1', { ...args, memo: 'x' }, t)).not.toBe(k);
     expect(k.length).toBeLessThanOrEqual(108);
+  });
+});
+
+describe('payout status', () => {
+  it('finds the batch id execute() recorded', () => {
+    expect(payoutBatchId({ kind: 'payout', result: 'Paid USD 400.00 to sam@x.test. Payout 5UXD2E8A7EBQJ is pending.' })).toBe('5UXD2E8A7EBQJ');
+    expect(payoutBatchId({ kind: 'payout', result: 'Paid USD 400.00 to sam@x.test. Payout 5UXD2E8A7EBQJ is success. PayPal then reported it unclaimed.' })).toBe('5UXD2E8A7EBQJ');
+    expect(payoutBatchId({ kind: 'payout', result: 'PayPal POST /v1/payments/payouts failed (422)' })).toBeNull();
+    expect(payoutBatchId({ kind: 'refund', result: 'Payout X is y.' })).toBeNull();
+  });
+  it('says where an unsent payout stands', () => {
+    expect(describeUnsent({ status: 'waiting' })).toMatch(/waiting for its invoice/);
+    expect(describeUnsent({ status: 'expired' })).toBe('It was never paid: it was expired.');
+  });
+  it('says the batch in one sentence', () => {
+    expect(describePayout({ id: 'B1', status: 'success', items: [{ id: 'I1', status: 'success', amount: { value: 400, currency: 'USD' }, recipient: 'sam@x.test' }] })).toBe('USD 400.00 to sam@x.test went through.');
+    expect(describePayout({ id: 'B1', status: 'success', items: [{ id: 'I1', status: 'failed', amount: { value: 400, currency: 'USD' }, recipient: 'sam@x.test', error: 'Receiver is unregistered' }] })).toBe('USD 400.00 to sam@x.test failed (Receiver is unregistered).');
+    expect(describePayout({ id: 'B1', status: 'denied', items: [] })).toMatch(/denied/);
   });
 });

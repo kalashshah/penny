@@ -7,6 +7,7 @@ import type {
   Money,
   PaymentProvider,
   Payout,
+  PayoutBatch,
   PennyEvent,
   PennyEventType,
   Refund,
@@ -230,6 +231,10 @@ export class PayPalProvider implements PaymentProvider {
     return { id: res.batch_header.payout_batch_id, status: res.batch_header.batch_status.toLowerCase(), amount, recipient: recipientEmail };
   }
 
+  async getPayout(batchId: string): Promise<PayoutBatch> {
+    return toPayoutBatch(await this.api<RawPayoutBatch>('GET', `/v1/payments/payouts/${encodeURIComponent(batchId)}`));
+  }
+
   async refundInvoice(invoiceId: string, amount?: Money, idempotencyKey?: string): Promise<Refund> {
     const inv = await this.getInvoice(invoiceId);
     const captureId = inv.paymentIds[0];
@@ -346,6 +351,10 @@ interface RawDispute {
   disputed_transactions?: { seller_transaction_id?: string; buyer?: { email?: string } }[];
   messages?: { posted_by?: string; time_posted?: string; content?: string }[];
   evidences?: { evidence_type?: string; notes?: string; date?: string; evidence_info?: { tracking_info?: RawTracking[] } }[];
+}
+interface RawPayoutBatch {
+  batch_header?: { payout_batch_id?: string; batch_status?: string };
+  items?: { payout_item_id?: string; transaction_status?: string; payout_item?: { amount?: RawMoney; receiver?: string }; errors?: { name?: string; message?: string } }[];
 }
 interface RawTracking {
   carrier_name?: string;
@@ -472,6 +481,20 @@ export function evidenceInput(e: DisputeEvidence): { evidences: Record<string, u
     };
   }
   return { evidences: [{ evidence_type: 'OTHER', notes: e.notes.slice(0, 2000) }] };
+}
+
+export function toPayoutBatch(raw: RawPayoutBatch): PayoutBatch {
+  return {
+    id: raw.batch_header?.payout_batch_id ?? '',
+    status: (raw.batch_header?.batch_status ?? 'unknown').toLowerCase(),
+    items: (raw.items ?? []).map((i) => ({
+      id: i.payout_item_id ?? '',
+      status: (i.transaction_status ?? 'unknown').toLowerCase(),
+      amount: money(i.payout_item?.amount),
+      recipient: i.payout_item?.receiver,
+      error: i.errors?.message ?? i.errors?.name,
+    })),
+  };
 }
 
 const TXN_STATUS: Record<string, string> = { S: 'completed', P: 'pending', D: 'denied', V: 'reversed' };

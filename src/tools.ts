@@ -1,11 +1,11 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { confirm, runOrHold, type Approvals } from './approvals';
+import { confirm, runOrHold, type Approvals, type Proposal } from './approvals';
 import { sha256Hex } from './crypto';
 import type { Env } from './env';
 import { describeForecast, formatWhatIf, loadForecast } from './forecast';
 import type { Memory } from './memory';
-import type { Dispute, Invoice, Money, PaymentProvider } from './providers/types';
+import type { Dispute, Invoice, Money, PaymentProvider, PayoutBatch } from './providers/types';
 import { fmtMoney } from './providers/types';
 import { REPORT_PAGES } from './reports';
 import { describeSummary, summarize } from './summary';
@@ -90,6 +90,52 @@ export function refundable(i: Invoice, requested?: number): { ok: true; money: M
   const currency = i.paid?.currency ?? i.total.currency;
   if (value > cap) return { ok: false, error: `Only ${fmtMoney({ value: cap, currency })} was paid on invoice ${i.number}; refund that or less.` };
   return { ok: true, money: { value, currency } };
+}
+
+/** execute() records "Payout <batch id> is <status>." in the proposal's result; that is the only place the batch id is kept. */
+export function payoutBatchId(p: Pick<Proposal, 'kind' | 'result'>): string | null {
+  if (p.kind !== 'payout') return null;
+  return /\bPayout ([A-Z0-9]+) is\b/i.exec(p.result ?? '')?.[1] ?? null;
+}
+
+/** Where a payout proposal stands before (or without) reaching PayPal, in a sentence. */
+export function describeUnsent(p: Pick<Proposal, 'status' | 'result'>): string {
+  switch (p.status) {
+    case 'waiting':
+      return 'It has not been paid: it is waiting for its invoice to be paid first.';
+    case 'pending':
+      return 'It has not been paid: it is still waiting for a yes.';
+    case 'approved':
+      return 'It was approved and is being sent to PayPal right now.';
+    case 'failed':
+      return `It never reached PayPal: ${p.result ?? 'it failed'}.`;
+    default:
+      return `It was never paid: it was ${p.status}${p.result ? ` (${p.result})` : ''}.`;
+  }
+}
+
+const ITEM_SAYS: Record<string, string> = {
+  success: 'went through',
+  pending: 'is still pending at PayPal',
+  unclaimed: 'is unclaimed: the recipient has no PayPal account yet, and PayPal returns the money if it stays unclaimed for 30 days',
+  onhold: 'is on hold while PayPal reviews it',
+  failed: 'failed',
+  returned: 'was returned',
+  blocked: 'was blocked by PayPal',
+  refunded: 'was refunded',
+  reversed: 'was reversed',
+  denied: 'was denied',
+};
+
+/** A payout batch as one sentence a voice agent can say. */
+export function describePayout(b: PayoutBatch): string {
+  if (!b.items.length) return b.status === 'denied' ? 'PayPal denied that payout, so nothing was sent.' : `That payout is ${b.status} at PayPal.`;
+  const parts = b.items.map((i) => {
+    const said = ITEM_SAYS[i.status] ?? `is ${i.status}`;
+    return `${fmtMoney(i.amount) || 'the payment'} to ${i.recipient ?? 'the recipient'} ${said}${i.error && i.status !== 'success' ? ` (${i.error})` : ''}`;
+  });
+  const s = parts.join('; ');
+  return `${s[0].toUpperCase()}${s.slice(1)}.`;
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
@@ -354,6 +400,25 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         const d = await provider.getDispute(a.dispute_id);
         const out = await runOrHold(money, 'accept_dispute', `Accept dispute ${d.id} and refund ${fmtMoney(d.amount)} to ${d.buyerEmail ?? 'the buyer'}`, d.amount, { disputeId: d.id, note: a.note ?? 'We accept the claim and are refunding you in full.' });
         return { status: out.status, proposal_id: out.proposal.id, description: out.proposal.description, result: out.result, page: pageUrl(env, withKey(`/p/proposal/${out.proposal.id}`)) };
+      }),
+  );
+
+  server.registerTool(
+    'payout_status',
+    { description: 'Where a payout stands at PayPal (went through, pending, unclaimed, failed). Give the proposal_id Penny returned when paying, or a PayPal payout_batch_id.', inputSchema: { proposal_id: z.string().optional(), payout_batch_id: z.string().optional() } },
+    ({ proposal_id, payout_batch_id }) =>
+      guard(async () => {
+        let batchId = payout_batch_id;
+        if (!batchId) {
+          if (!proposal_id) return { error: 'Which payout? Give the proposal id or the PayPal payout batch id.' };
+          const p = await approvals.get(proposal_id);
+          if (!p) return { error: 'No such proposal' };
+          if (p.kind !== 'payout') return { error: `That is a ${p.kind.replace('_', ' ')}, not a payout.` };
+          batchId = payoutBatchId(p) ?? undefined;
+          if (!batchId) return { status: p.status, spoken: describeUnsent(p), page: pageUrl(env, withKey(`/p/proposal/${p.id}`)) };
+        }
+        const b = await provider.getPayout(batchId);
+        return { batch: b.id, batchStatus: b.status, items: b.items.map((i) => ({ status: i.status, amount: fmtMoney(i.amount), recipient: i.recipient, error: i.error })), spoken: describePayout(b) };
       }),
   );
 

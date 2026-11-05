@@ -66,6 +66,14 @@ export interface Payout {
   recipient: string;
 }
 
+/** A payout as PayPal tracks it: the batch, and the one payment per recipient inside it. */
+export interface PayoutBatch {
+  id: string;
+  /** The batch's status, lowercased: pending, processing, success, denied, canceled. */
+  status: string;
+  items: { id: string; status: string; amount?: Money; recipient?: string; error?: string }[];
+}
+
 export interface Refund {
   id: string;
   status: string;
@@ -123,6 +131,7 @@ export interface PaymentProvider {
   acceptDispute(id: string, note: string): Promise<void>;
   provideDisputeEvidence(id: string, evidence: DisputeEvidence): Promise<void>;
   payout(input: { recipientEmail: string; amount: Money; note: string; idempotencyKey: string }): Promise<Payout>;
+  getPayout(batchId: string): Promise<PayoutBatch>;
   refundInvoice(invoiceId: string, amount?: Money, idempotencyKey?: string): Promise<Refund>;
   listTransactions(from: Date, to: Date): Promise<Transaction[]>;
   /** What is in the account now, or null when the rail will not say. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { carrierFor, evidenceInput, mapInvoiceStatus, toDispute, toEvent, toInvoice } from '../src/providers/paypal';
+import { carrierFor, evidenceInput, mapInvoiceStatus, toDispute, toEvent, toInvoice, toPayoutBatch } from '../src/providers/paypal';
 
 describe('toInvoice', () => {
   it('maps the fields Penny reads', () => {
@@ -69,5 +69,12 @@ describe('dispute evidence', () => {
   it('maps evidence already sent', () => {
     const d = toDispute({ dispute_id: 'PP-D-1', evidences: [{ evidence_type: 'PROOF_OF_FULFILLMENT', date: '2026-11-01T00:00:00Z', evidence_info: { tracking_info: [{ carrier_name: 'OTHER', carrier_name_other: 'Royal Mail', tracking_number: 'RM1' }] } }] });
     expect(d.evidence).toEqual([{ type: 'PROOF_OF_FULFILLMENT', notes: undefined, at: '2026-11-01T00:00:00Z', tracking: [{ carrier: 'Royal Mail', number: 'RM1' }] }]);
+  });
+});
+
+describe('toPayoutBatch', () => {
+  it('maps the batch and its items', () => {
+    const b = toPayoutBatch({ batch_header: { payout_batch_id: 'B1', batch_status: 'SUCCESS' }, items: [{ payout_item_id: 'I1', transaction_status: 'UNCLAIMED', payout_item: { amount: { currency: 'USD', value: '40.00' }, receiver: 'sam@x.test' } }] });
+    expect(b).toEqual({ id: 'B1', status: 'success', items: [{ id: 'I1', status: 'unclaimed', amount: { value: 40, currency: 'USD' }, recipient: 'sam@x.test', error: undefined }] });
   });
 });
