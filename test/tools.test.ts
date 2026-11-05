@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Approvals } from '../src/approvals';
 import type { Env } from '../src/env';
 import type { Memory } from '../src/memory';
@@ -39,14 +39,12 @@ describe('refundable', () => {
 
 describe('invoiceKey', () => {
   const args = { customer_email: 'ap@acme.test', items: [{ name: 'Design', unit_amount: 1000 }] };
-  const t = Date.UTC(2026, 10, 5, 12, 0, 10);
-  it('is stable for a retry within the minute and differs otherwise', async () => {
-    const k = await invoiceKey('t_1', args, t);
-    expect(await invoiceKey('t_1', args, t + 30_000)).toBe(k);
-    expect(await invoiceKey('t_1', args, t + 60_000)).not.toBe(k);
-    expect(await invoiceKey('t_2', args, t)).not.toBe(k);
-    expect(await invoiceKey('t_1', { ...args, memo: 'x' }, t)).not.toBe(k);
-    expect(k.length).toBeLessThanOrEqual(108);
+  it('is stable for the same tenant and arguments, whatever the clock', async () => {
+    const k = await invoiceKey('t_1', args);
+    expect(await invoiceKey('t_1', args)).toBe(k);
+    expect(await invoiceKey('t_2', args)).not.toBe(k);
+    expect(await invoiceKey('t_1', { ...args, memo: 'x' })).not.toBe(k);
+    expect(k.length).toBeLessThanOrEqual(90);
   });
 });
 
@@ -93,6 +91,10 @@ function toolRig(invoice: Invoice) {
   const provider = {
     name: 'paypal',
     getInvoice: async () => current,
+    createAndSendInvoice: async (i: { idempotencyKey: string }) => {
+      calls.push(`create ${i.idempotencyKey}`);
+      return current;
+    },
     cancelInvoice: async () => {
       calls.push('cancel');
       current = { ...current, status: 'cancelled' };
@@ -144,6 +146,35 @@ describe('cancel_invoice and record_invoice_payment', () => {
     // The cash is not in PayPal, so even a small payout waits for a yes instead of leaving the balance.
     expect(calls).toEqual(['record 400', 'record 600']);
     expect((await approvals.get(p.id))?.status).toBe('pending');
+  });
+});
+
+describe('retried invoicing calls', () => {
+  const open: Invoice = { ...inv, status: 'sent', due: { value: 1000, currency: 'USD' }, paymentIds: [] };
+  it('a retried record_invoice_payment returns the first answer instead of recording again, even across a minute boundary', async () => {
+    const { run, calls } = toolRig(open);
+    const now = Date.now();
+    const first = await run('record_invoice_payment', { invoice_id: open.id, method: 'CHECK', amount: 400 });
+    vi.useFakeTimers({ now: now + 5 * 60_000, toFake: ['Date'] });
+    try {
+      const again = await run('record_invoice_payment', { invoice_id: open.id, method: 'CHECK', amount: 400 });
+      expect(again).toEqual(first);
+      expect(calls).toEqual(['record 400']);
+      // After the window it is a new request.
+      vi.setSystemTime(now + 11 * 60_000);
+      await run('record_invoice_payment', { invoice_id: open.id, method: 'CHECK', amount: 400 });
+      expect(calls).toEqual(['record 400', 'record 400']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('a retried create_invoice creates one invoice', async () => {
+    const { run, calls } = toolRig(open);
+    const args = { customer_email: 'ap@acme.test', items: [{ name: 'Design', unit_amount: 1000 }] };
+    const a = await run('create_invoice', args);
+    const b = await run('create_invoice', args);
+    expect(b).toEqual(a);
+    expect(calls.filter((c) => c.startsWith('create'))).toHaveLength(1);
   });
 });
 

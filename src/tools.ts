@@ -4,6 +4,7 @@ import { confirm, runOrHold, type Approvals, type Proposal } from './approvals';
 import { sha256Hex } from './crypto';
 import type { Env } from './env';
 import { callOffFor, releaseFor } from './events';
+import { once } from './idempotency';
 import { describeForecast, formatWhatIf, loadForecast } from './forecast';
 import type { Memory } from './memory';
 import type { Dispute, Invoice, Money, PaymentProvider, PayoutBatch } from './providers/types';
@@ -71,10 +72,13 @@ function compactDispute(d: Dispute) {
   };
 }
 
-/** Same tenant, same arguments, same minute: same key. */
-export async function invoiceKey(tenantId: string, args: unknown, now = Date.now(), prefix = 'penny-inv'): Promise<string> {
-  return `${prefix}-${(await sha256Hex(`${tenantId}|${JSON.stringify(args)}|${Math.floor(now / 60_000)}`)).slice(0, 40)}`;
+/** Same tenant, same arguments: same key. once() makes it last ten minutes from the first call, not to a clock boundary. */
+export async function invoiceKey(tenantId: string, args: unknown, prefix = 'penny-inv'): Promise<string> {
+  return `${prefix}-${(await sha256Hex(`${tenantId}|${JSON.stringify(args)}`)).slice(0, 40)}`;
 }
+
+/** The PayPal-Request-Id for one claim of a key: a deliberate repeat after the dedupe window is a new request. */
+const requestId = (key: string, claimedAt: number) => `${key}-${claimedAt.toString(36)}`;
 
 /**
  * What can be recorded as paid outside PayPal on an invoice: only one still waiting for money, at most what is due.
@@ -298,18 +302,21 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     },
     (a) =>
       guard(async () => {
-        // A voice agent retries a slow tool call; the same invoice asked for again within the minute is one invoice.
-        const idempotencyKey = await invoiceKey(tenant.id, a);
-        const i = await provider.createAndSendInvoice({
-          idempotencyKey,
-          customerEmail: a.customer_email,
-          customerName: a.customer_name,
-          items: a.items.map((x) => ({ name: x.name, quantity: x.quantity ?? 1, unitAmount: x.unit_amount })),
-          currency: (a.currency ?? currency).toUpperCase(),
-          dueInDays: a.due_in_days,
-          memo: a.memo,
+        // A voice agent retries a slow tool call; the same invoice asked for again within ten minutes is one invoice.
+        // PayPal does not document PayPal-Request-Id for Invoicing v2, so the dedupe is ours (D1); the header stays, harmless.
+        const key = await invoiceKey(tenant.id, a);
+        return once(deps.env.DB, tenant.id, key, async (claimedAt) => {
+          const i = await provider.createAndSendInvoice({
+            idempotencyKey: requestId(key, claimedAt),
+            customerEmail: a.customer_email,
+            customerName: a.customer_name,
+            items: a.items.map((x) => ({ name: x.name, quantity: x.quantity ?? 1, unitAmount: x.unit_amount })),
+            currency: (a.currency ?? currency).toUpperCase(),
+            dueInDays: a.due_in_days,
+            memo: a.memo,
+          });
+          return { sent: true, ...compactInvoice(i, today()), page: pageUrl(env, withKey(`/p/invoice/${encodeURIComponent(i.id)}`)) };
         });
-        return { sent: true, ...compactInvoice(i, today()), page: pageUrl(env, withKey(`/p/invoice/${encodeURIComponent(i.id)}`)) };
       }),
   );
 
@@ -358,24 +365,28 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     },
     (a) =>
       guard(async () => {
-        const inv = await provider.getInvoice(a.invoice_id);
-        const r = recordable(inv, a.amount);
-        if (!r.ok) return { error: r.error };
-        const date = a.payment_date ?? today();
-        if (date > today()) return { error: 'That payment date is in the future; record it once the money is in.' };
-        const idempotencyKey = await invoiceKey(tenant.id, a, Date.now(), 'penny-pay');
-        await provider.recordInvoicePayment(inv.id, { method: a.method, amount: r.money, date, note: a.note, idempotencyKey });
-        const after = await provider.getInvoice(inv.id);
-        // Paid in full outside PayPal is still paid, so what waited on this invoice is released now. But that money is
-        // not in the PayPal balance the payout would come from, so releaseFor has every released payout wait for a yes.
-        const released = await releaseFor(deps.env, tenant, provider, inv.id, { invoice: after });
-        const left = after.status === 'paid' ? 'it is now paid in full' : `${fmtMoney(after.due)} is still due`;
-        return {
-          recorded: true,
-          ...compactInvoice(after, today()),
-          spoken: [`Recorded ${fmtMoney(r.money)} by ${METHOD_WORDS[a.method]} on invoice ${inv.number}; ${left}.`, released?.detail].filter(Boolean).join(' '),
-          page: released?.page ?? pageUrl(env, withKey(`/p/invoice/${encodeURIComponent(inv.id)}`)),
-        };
+        // Recording the same cheque twice would count it twice; a retry within ten minutes gets the first answer back
+        // (before the checks, which the first recording would now fail).
+        const key = await invoiceKey(tenant.id, a, 'penny-pay');
+        return once(deps.env.DB, tenant.id, key, async (claimedAt) => {
+          const inv = await provider.getInvoice(a.invoice_id);
+          const r = recordable(inv, a.amount);
+          if (!r.ok) return { error: r.error };
+          const date = a.payment_date ?? today();
+          if (date > today()) return { error: 'That payment date is in the future; record it once the money is in.' };
+          await provider.recordInvoicePayment(inv.id, { method: a.method, amount: r.money, date, note: a.note, idempotencyKey: requestId(key, claimedAt) });
+          const after = await provider.getInvoice(inv.id);
+          // Paid in full outside PayPal is still paid, so what waited on this invoice is released now. But that money is
+          // not in the PayPal balance the payout would come from, so releaseFor has every released payout wait for a yes.
+          const released = await releaseFor(deps.env, tenant, provider, inv.id, { invoice: after });
+          const left = after.status === 'paid' ? 'it is now paid in full' : `${fmtMoney(after.due)} is still due`;
+          return {
+            recorded: true,
+            ...compactInvoice(after, today()),
+            spoken: [`Recorded ${fmtMoney(r.money)} by ${METHOD_WORDS[a.method]} on invoice ${inv.number}; ${left}.`, released?.detail].filter(Boolean).join(' '),
+            page: released?.page ?? pageUrl(env, withKey(`/p/invoice/${encodeURIComponent(inv.id)}`)),
+          };
+        });
       }),
   );
 
