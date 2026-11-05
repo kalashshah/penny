@@ -75,6 +75,32 @@ export async function startCall(
   return { room: j.room, joinUrl };
 }
 
+/** Calls a tenant may start per rolling day: each one is a live avatar and voice on LlamaCalls, which costs real money. */
+export const DAILY_CALL_CAP = 20;
+/** A call still open after this long is assumed abandoned, so it never locks the tenant out. */
+const MAX_CALL_MS = 2 * 60 * 60_000;
+
+/** Why this tenant may not start a call right now, in words for the founder, or null when it may. */
+export async function callBlocker(env: Env, tenantId: string, now = Date.now()): Promise<string | null> {
+  const recent = await rows<CallRow>(env.DB.prepare('SELECT * FROM calls WHERE tenant_id = ? AND started_at > ? ORDER BY started_at DESC').bind(tenantId, now - 86_400_000));
+  if (recent.length >= DAILY_CALL_CAP) return `That is ${DAILY_CALL_CAP} calls with Penny today, the daily limit. Try again tomorrow, or ask her on the next call.`;
+  const open = recent.find((c) => !c.ended_at && c.started_at > now - MAX_CALL_MS);
+  if (!open) return null;
+  // ended_at is filled in by the cron; ask LlamaCalls so a call hung up a minute ago does not block the next.
+  try {
+    const meta = await fetch(`${env.LLAMACALLS_URL}/api/calls/${encodeURIComponent(open.room)}`, { headers: { Authorization: `Bearer ${env.LLAMACALLS_KEY}` } });
+    const { call } = meta.ok ? ((await meta.json()) as { call?: { endedAt?: number | null } }) : {};
+    if (!meta.ok || call?.endedAt) {
+      if (call?.endedAt) await env.DB.prepare('UPDATE calls SET ended_at = ? WHERE room = ?').bind(call.endedAt, open.room).run();
+      return null;
+    }
+  } catch {
+    return null; // LlamaCalls unreachable: let the start itself say so.
+  }
+  const mins = Math.max(1, Math.round((now - open.started_at) / 60_000));
+  return `Penny is already on a call with you (started ${mins} min ago). Rejoin or hang up that one first; she can only be in one call at a time.`;
+}
+
 export async function listCalls(env: Env, tenantId: string, limit = 5): Promise<CallRow[]> {
   return rows<CallRow>(env.DB.prepare('SELECT * FROM calls WHERE tenant_id = ? ORDER BY started_at DESC LIMIT ?').bind(tenantId, limit));
 }

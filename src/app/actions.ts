@@ -4,7 +4,7 @@
 // a server action is a public POST endpoint like any other.
 import { revalidatePath } from 'next/cache';
 import { Approvals, confirm } from '@/approvals';
-import { startCall } from '@/calls';
+import { callBlocker, startCall } from '@/calls';
 import { currentOwner, errorMessage, getEnv, memoryOf, providerOf } from '@/context';
 import { dismissAlert, getAlert } from '@/events';
 import { isConnected, Tenants } from '@/tenants';
@@ -20,6 +20,8 @@ export async function startCallAction(alertId: string | null): Promise<Result<{ 
   if (!isConnected(t)) return { ok: false, error: 'Connect PayPal in Settings first.' };
   try {
     const env = getEnv();
+    const blocked = await callBlocker(env, t.id);
+    if (blocked) return { ok: false, error: blocked };
     const alert = alertId ? await getAlert(env, t.id, alertId) : null;
     const [provider, memory, mcpToken] = await Promise.all([providerOf(t), memoryOf(t), new Tenants(env).mcpToken(t)]);
     const call = await startCall(env, t, mcpToken, provider, memory, {
