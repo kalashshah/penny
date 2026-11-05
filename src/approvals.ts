@@ -113,16 +113,40 @@ export class Approvals {
     return (await rows<Row>(this.db.prepare('SELECT * FROM proposals WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?').bind(this.tenantId, limit))).map(fromRow);
   }
 
+  /**
+   * Takes a pending, unexpired proposal for running: the UPDATE is the lock, so two yeses at once
+   * (call and dashboard, or a double click) run it once. 'approved' doubles as "executing" until finish.
+   */
+  async claim(id: string, by: string, now = Date.now()): Promise<Proposal | null> {
+    const r = await this.db
+      .prepare(
+        "UPDATE proposals SET status = 'approved', approved_by = ?, decided_at = ? WHERE id = ? AND tenant_id = ? AND status = 'pending' AND created_at >= CASE WHEN after_invoice IS NULL THEN ? ELSE ? END RETURNING *",
+      )
+      .bind(by, now, id, this.tenantId, now - PROPOSAL_TTL_MS, now - RELEASED_TTL_MS)
+      .first<Row>();
+    return r ? fromRow(r) : null;
+  }
+
+  /** Rejects, or records an expiry; approving goes through claim. Returns the proposal as it now stands. */
   async decide(id: string, approved: boolean, by?: string): Promise<Proposal | null> {
     const p = await this.get(id);
     if (!p) return null;
     const next = decideTransition(p, approved, by, Date.now());
-    if (next.status !== p.status) await this.save(next);
-    return next;
+    if (next.status === p.status || next.status === 'approved') return p;
+    // Only from the status we read: a racing claim wins and this becomes a no-op.
+    const res = await this.db
+      .prepare('UPDATE proposals SET status = ?, approved_by = ?, decided_at = ? WHERE id = ? AND tenant_id = ? AND status = ?')
+      .bind(next.status, next.approvedBy ?? null, next.decidedAt ?? null, p.id, this.tenantId, p.status)
+      .run();
+    return res.meta.changes ? next : this.get(id);
   }
 
+  /** Only a claimed proposal settles, so a late or repeated finish never rewrites a decided one. */
   async finish(id: string, ok: boolean, result: string): Promise<void> {
-    await this.db.prepare('UPDATE proposals SET status = ?, result = ? WHERE id = ?').bind(ok ? 'done' : 'failed', result, id).run();
+    await this.db
+      .prepare("UPDATE proposals SET status = ?, result = ? WHERE id = ? AND tenant_id = ? AND status = 'approved'")
+      .bind(ok ? 'done' : 'failed', result, id, this.tenantId)
+      .run();
   }
 
   /** Cron, across every tenant. */
@@ -134,12 +158,6 @@ export class Approvals {
     return res.meta.changes ?? 0;
   }
 
-  private async save(p: Proposal): Promise<void> {
-    await this.db
-      .prepare('UPDATE proposals SET status = ?, approved_by = ?, decided_at = ? WHERE id = ?')
-      .bind(p.status, p.approvedBy ?? null, p.decidedAt ?? null, p.id)
-      .run();
-  }
 }
 
 /** Runs an approved proposal against the rail and says what happened in one sentence. */
@@ -163,7 +181,8 @@ export async function execute(provider: PaymentProvider, p: Proposal): Promise<s
 }
 
 export interface ActionOutcome {
-  status: 'done' | 'needs_approval' | 'failed';
+  /** unchanged: it was already decided (or being run), so this call did nothing. */
+  status: 'done' | 'needs_approval' | 'failed' | 'unchanged';
   proposal: Proposal;
   result?: string;
 }
@@ -178,8 +197,7 @@ export async function runOrHold(
 ): Promise<ActionOutcome> {
   const proposal = await deps.approvals.create(kind, description, money, input);
   if (needsApproval(money.value, deps.threshold)) return { status: 'needs_approval', proposal };
-  await deps.approvals.decide(proposal.id, true, 'auto (under threshold)');
-  return settle(deps, { ...proposal, status: 'approved' });
+  return (await claimAndSettle(deps, proposal.id, 'auto (under threshold)')) ?? { status: 'failed', proposal, result: 'The action vanished before it ran.' };
 }
 
 /** A customer paid: run what was waiting on it if small, otherwise leave it pending for a yes. */
@@ -188,22 +206,41 @@ export async function releaseWaiting(deps: { approvals: Approvals; provider: Pay
   return Promise.all(
     released.map(async (p) => {
       if (needsApproval(p.amount, deps.threshold)) return { status: 'needs_approval' as const, proposal: p };
-      await deps.approvals.decide(p.id, true, 'auto (under threshold, invoice paid)');
-      return settle(deps, { ...p, status: 'approved' });
+      return (await claimAndSettle(deps, p.id, 'auto (under threshold, invoice paid)')) ?? { status: 'failed' as const, proposal: p, result: 'The action vanished before it ran.' };
     }),
   );
 }
 
-/** A human said yes (on the call or on the dashboard): run it. */
+/** A human said yes (on the call or on the dashboard): run it, unless it already ran or is running. */
 export async function confirm(
   deps: { approvals: Approvals; provider: PaymentProvider },
   id: string,
   approvedBy: string,
 ): Promise<ActionOutcome | null> {
-  const p = await deps.approvals.decide(id, true, approvedBy);
+  return claimAndSettle(deps, id, approvedBy);
+}
+
+async function claimAndSettle(deps: { approvals: Approvals; provider: PaymentProvider }, id: string, by: string): Promise<ActionOutcome | null> {
+  const claimed = await deps.approvals.claim(id, by);
+  if (claimed) return settle(deps, claimed);
+  // Not ours to run: missing, expired (recorded now), or already decided. Say where it stands.
+  const p = await deps.approvals.decide(id, true, by);
   if (!p) return null;
-  if (p.status !== 'approved') return { status: 'failed', proposal: p, result: `This action is ${p.status}, so nothing was done.` };
-  return settle(deps, p);
+  return { status: 'unchanged', proposal: p, result: describeUnchanged(p) };
+}
+
+export function describeUnchanged(p: Proposal): string {
+  switch (p.status) {
+    case 'approved':
+      return 'This action is already approved and running; nothing more was done.';
+    case 'done':
+    case 'failed':
+      return `This action already ran (${p.status})${p.result ? `: ${p.result}` : ''}. Nothing more was done.`;
+    case 'waiting':
+      return 'This payment is waiting for its invoice to be paid; it cannot be approved before then.';
+    default:
+      return `This action is ${p.status}, so nothing was done.`;
+  }
 }
 
 async function settle(deps: { approvals: Approvals; provider: PaymentProvider }, p: Proposal): Promise<ActionOutcome> {

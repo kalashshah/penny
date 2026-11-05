@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { PROPOSAL_TTL_MS, decideTransition, needsApproval, type Proposal } from '../src/approvals';
+import { Approvals, PROPOSAL_TTL_MS, confirm, decideTransition, needsApproval, releaseWaiting, type Proposal } from '../src/approvals';
+import type { PaymentProvider } from '../src/providers/types';
+import { fakeD1 } from './helpers/d1';
 
 const base: Proposal = { id: 'ap_1', kind: 'payout', description: 'Pay USD 500.00 to sam@example.com', amount: 500, currency: 'USD', input: {}, status: 'pending', createdAt: 1_000 };
 
@@ -39,5 +41,93 @@ describe('decideTransition', () => {
     for (const status of ['approved', 'rejected', 'expired', 'done', 'failed'] as const) {
       expect(decideTransition({ ...base, status }, true, 'Alex', 2_000).status).toBe(status);
     }
+  });
+});
+
+// A rail that only counts: enough to see how many times money would have moved.
+function countingProvider() {
+  const calls = { payout: 0 };
+  const provider = {
+    name: 'fake',
+    async payout({ amount, recipientEmail }: { amount: { value: number; currency: string }; recipientEmail: string }) {
+      calls.payout++;
+      await Promise.resolve();
+      return { id: `PB-${calls.payout}`, status: 'pending', amount, recipient: recipientEmail };
+    },
+  } as unknown as PaymentProvider;
+  return { provider, calls };
+}
+
+describe('confirm (against SQLite)', () => {
+  const setup = () => {
+    const approvals = new Approvals(fakeD1(), 't_1');
+    return { approvals, ...countingProvider() };
+  };
+  const held = (a: Approvals) => a.create('payout', 'Pay USD 500.00 to sam@example.com', { value: 500, currency: 'USD' }, { recipientEmail: 'sam@example.com', note: 'x' });
+
+  it('runs a pending proposal once and records the approver', async () => {
+    const { approvals, provider, calls } = setup();
+    const p = await held(approvals);
+    const out = await confirm({ approvals, provider }, p.id, 'Alex');
+    expect(out?.status).toBe('done');
+    expect(calls.payout).toBe(1);
+    const saved = await approvals.get(p.id);
+    expect(saved?.status).toBe('done');
+    expect(saved?.approvedBy).toBe('Alex');
+  });
+
+  it('is a no-op on a proposal that already ran', async () => {
+    const { approvals, provider, calls } = setup();
+    const p = await held(approvals);
+    await confirm({ approvals, provider }, p.id, 'Alex');
+    const again = await confirm({ approvals, provider }, p.id, 'Sam');
+    expect(again?.status).toBe('unchanged');
+    expect(again?.proposal.status).toBe('done');
+    expect(again?.result).toMatch(/already ran/);
+    expect(calls.payout).toBe(1);
+    expect((await approvals.get(p.id))?.approvedBy).toBe('Alex');
+  });
+
+  it('runs two concurrent yeses exactly once', async () => {
+    const { approvals, provider, calls } = setup();
+    const p = await held(approvals);
+    const outs = await Promise.all([confirm({ approvals, provider }, p.id, 'Alex'), confirm({ approvals, provider }, p.id, 'Sam')]);
+    expect(calls.payout).toBe(1);
+    expect(outs.map((o) => o?.status).sort()).toEqual(['done', 'unchanged']);
+  });
+
+  it('cannot reject what is already running or done', async () => {
+    const { approvals, provider } = setup();
+    const p = await held(approvals);
+    await confirm({ approvals, provider }, p.id, 'Alex');
+    expect((await approvals.decide(p.id, false, 'Sam'))?.status).toBe('done');
+  });
+
+  it('expires instead of running a stale one', async () => {
+    const { approvals, provider, calls } = setup();
+    const p = await held(approvals);
+    const out = await approvals.claim(p.id, 'Alex', p.createdAt + PROPOSAL_TTL_MS + 1);
+    expect(out).toBeNull();
+    expect(calls.payout).toBe(0);
+    void provider;
+  });
+
+  it('pay-when-paid: waits, then a release under the threshold pays once', async () => {
+    const { approvals, provider, calls } = setup();
+    const p = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
+    expect((await confirm({ approvals, provider }, p.id, 'Alex'))?.status).toBe('unchanged');
+    const deps = { approvals, provider, threshold: 100 };
+    const [first, second] = await Promise.all([releaseWaiting(deps, 'INV2-1'), releaseWaiting(deps, 'INV2-1')]);
+    expect([...first, ...second].map((o) => o.status)).toEqual(['done']);
+    expect(calls.payout).toBe(1);
+  });
+
+  it('pay-when-paid: a release over the threshold asks, then a yes pays', async () => {
+    const { approvals, provider, calls } = setup();
+    const p = await approvals.create('payout', 'Pay later', { value: 500, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
+    const [o] = await releaseWaiting({ approvals, provider, threshold: 100 }, 'INV2-1');
+    expect(o.status).toBe('needs_approval');
+    expect((await confirm({ approvals, provider }, p.id, 'Alex'))?.status).toBe('done');
+    expect(calls.payout).toBe(1);
   });
 });
