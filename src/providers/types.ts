@@ -52,7 +52,12 @@ export interface Dispute {
   transactionId?: string;
   buyerEmail?: string;
   messages: { by: string; at?: string; text: string }[];
+  /** What the seller has already sent PayPal as evidence. */
+  evidence: { type: string; notes?: string; tracking: { carrier: string; number: string }[]; at?: string }[];
 }
+
+/** Evidence for a dispute: a shipment's tracking (proof it was fulfilled), or a written note. */
+export type DisputeEvidence = { kind: 'fulfillment'; carrier: string; trackingNumber: string; notes?: string } | { kind: 'other'; notes: string };
 
 export interface Payout {
   id: string;
@@ -116,6 +121,7 @@ export interface PaymentProvider {
   getDispute(id: string): Promise<Dispute>;
   messageDispute(id: string, message: string): Promise<void>;
   acceptDispute(id: string, note: string): Promise<void>;
+  provideDisputeEvidence(id: string, evidence: DisputeEvidence): Promise<void>;
   payout(input: { recipientEmail: string; amount: Money; note: string; idempotencyKey: string }): Promise<Payout>;
   refundInvoice(invoiceId: string, amount?: Money, idempotencyKey?: string): Promise<Refund>;
   listTransactions(from: Date, to: Date): Promise<Transaction[]>;

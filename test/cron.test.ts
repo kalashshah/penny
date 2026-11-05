@@ -14,7 +14,7 @@ const inv = (id: string, dueDate: string, status: Invoice['status'] = 'sent'): I
   items: [],
   paymentIds: [],
 });
-const dispute = (id: string, respondBy: string, status = 'WAITING_FOR_SELLER_RESPONSE'): Dispute => ({ id, reason: 'X', status, state: 'OPEN', amount: { value: 40, currency: 'USD' }, respondBy, messages: [] });
+const dispute = (id: string, respondBy: string, status = 'WAITING_FOR_SELLER_RESPONSE'): Dispute => ({ id, reason: 'X', status, state: 'OPEN', amount: { value: 40, currency: 'USD' }, respondBy, messages: [], evidence: [] });
 
 describe('deadlineAlerts', () => {
   it('flags invoices a week or more overdue, once a week', () => {

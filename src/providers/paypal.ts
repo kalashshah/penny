@@ -1,5 +1,6 @@
 import type {
   Dispute,
+  DisputeEvidence,
   Invoice,
   InvoiceInput,
   InvoiceStatus,
@@ -84,11 +85,13 @@ export class PayPalProvider implements PaymentProvider {
   }
 
   private async api<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
+    // FormData carries its own multipart content-type (with the boundary), so it must not get the JSON one.
+    const form = body instanceof FormData;
     const send = async () =>
       fetch(`${this.host}${path}`, {
         method,
-        headers: { Authorization: `Bearer ${await this.token()}`, 'content-type': 'application/json', ...headers },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        headers: { Authorization: `Bearer ${await this.token()}`, ...(form ? {} : { 'content-type': 'application/json' }), ...headers },
+        body: body === undefined ? undefined : form ? body : JSON.stringify(body),
       });
     let res = await send();
     // A cached token keeps the scopes it was issued with; one minted after a feature is enabled on the app has them.
@@ -191,6 +194,13 @@ export class PayPalProvider implements PaymentProvider {
 
   async acceptDispute(id: string, note: string): Promise<void> {
     await this.api('POST', `/v1/customer/disputes/${encodeURIComponent(id)}/accept-claim`, { note, accept_claim_type: 'REFUND' });
+  }
+
+  async provideDisputeEvidence(id: string, evidence: DisputeEvidence): Promise<void> {
+    // provide-evidence is multipart/form-data only: the evidence JSON goes in a part named `input` (files would be file1, file2...).
+    const form = new FormData();
+    form.append('input', new Blob([JSON.stringify(evidenceInput(evidence))], { type: 'application/json' }), 'input.json');
+    await this.api('POST', `/v1/customer/disputes/${encodeURIComponent(id)}/provide-evidence`, form);
   }
 
   // ---- money out -----------------------------------------------------------
@@ -335,6 +345,12 @@ interface RawDispute {
   seller_response_due_date?: string;
   disputed_transactions?: { seller_transaction_id?: string; buyer?: { email?: string } }[];
   messages?: { posted_by?: string; time_posted?: string; content?: string }[];
+  evidences?: { evidence_type?: string; notes?: string; date?: string; evidence_info?: { tracking_info?: RawTracking[] } }[];
+}
+interface RawTracking {
+  carrier_name?: string;
+  carrier_name_other?: string;
+  tracking_number?: string;
 }
 interface RawTransaction {
   transaction_info?: {
@@ -423,7 +439,39 @@ export function toDispute(raw: RawDispute): Dispute {
     transactionId: txn?.seller_transaction_id,
     buyerEmail: txn?.buyer?.email,
     messages: (raw.messages ?? []).map((m) => ({ by: m.posted_by ?? '', at: m.time_posted, text: m.content ?? '' })),
+    evidence: (raw.evidences ?? []).map((e) => ({
+      type: e.evidence_type ?? 'OTHER',
+      notes: e.notes,
+      at: e.date,
+      tracking: (e.evidence_info?.tracking_info ?? []).map((t) => ({ carrier: (t.carrier_name === 'OTHER' && t.carrier_name_other) || t.carrier_name || '', number: t.tracking_number ?? '' })),
+    })),
   };
+}
+
+// PayPal's carrier_name is an enum of hundreds of codes; these are the ones a founder names out loud.
+// ponytail: anything else goes as OTHER with the name spelled out, which PayPal accepts for any carrier.
+const CARRIERS: Record<string, string> = { UPS: 'UPS', USPS: 'USPS', FEDEX: 'FEDEX', DHL: 'DHL' };
+
+/** "FedEx" → FEDEX; "Royal Mail" → OTHER + carrier_name_other. */
+export function carrierFor(name: string): { carrier_name: string; carrier_name_other?: string } {
+  const code = CARRIERS[name.toUpperCase().replace(/[^A-Z]/g, '')];
+  return code ? { carrier_name: code } : { carrier_name: 'OTHER', carrier_name_other: name.trim() || 'Other' };
+}
+
+/** The `input` part of provide-evidence: one evidence, PROOF_OF_FULFILLMENT with tracking or OTHER with notes. */
+export function evidenceInput(e: DisputeEvidence): { evidences: Record<string, unknown>[] } {
+  if (e.kind === 'fulfillment') {
+    return {
+      evidences: [
+        {
+          evidence_type: 'PROOF_OF_FULFILLMENT',
+          evidence_info: { tracking_info: [{ ...carrierFor(e.carrier), tracking_number: e.trackingNumber.trim() }] },
+          ...(e.notes ? { notes: e.notes.slice(0, 2000) } : {}),
+        },
+      ],
+    };
+  }
+  return { evidences: [{ evidence_type: 'OTHER', notes: e.notes.slice(0, 2000) }] };
 }
 
 const TXN_STATUS: Record<string, string> = { S: 'completed', P: 'pending', D: 'denied', V: 'reversed' };

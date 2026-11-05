@@ -27,8 +27,8 @@ describe('summarize', () => {
       inv({ id: 'f', status: 'cancelled', dueDate: '2026-09-01' }),
     ];
     const disputes: Dispute[] = [
-      { id: 'PP-1', reason: 'UNAUTHORISED', status: 'OPEN', state: 'REQUIRED_ACTION', amount: { value: 90, currency: 'USD' }, messages: [] },
-      { id: 'PP-2', reason: 'OTHER', status: 'RESOLVED', state: 'RESOLVED', amount: { value: 10, currency: 'USD' }, messages: [] },
+      { id: 'PP-1', reason: 'UNAUTHORISED', status: 'OPEN', state: 'REQUIRED_ACTION', amount: { value: 90, currency: 'USD' }, messages: [], evidence: [] },
+      { id: 'PP-2', reason: 'OTHER', status: 'RESOLVED', state: 'RESOLVED', amount: { value: 10, currency: 'USD' }, messages: [], evidence: [] },
     ];
     const s = summarize(invoices, disputes, now);
     expect(s.collectedThisMonth).toBe(1000);

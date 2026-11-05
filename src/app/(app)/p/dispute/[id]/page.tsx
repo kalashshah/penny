@@ -47,6 +47,23 @@ export default async function DisputePage({ params, searchParams }: Props) {
           </tbody>
         </table>
       </Card>
+      <Card title="Evidence" d={0.12}>
+        {d.evidence.length ? (
+          d.evidence.map((e, n) => (
+            <div className="msg" key={n}>
+              <b>
+                {words(e.type)}
+                {e.at ? ` · ${when(e.at)}` : ''}
+              </b>
+              {[...e.tracking.map((x) => `${x.carrier} tracking ${x.number}`), e.notes].filter(Boolean).join(' · ')}
+            </div>
+          ))
+        ) : (
+          <p className="empty">No evidence sent yet.</p>
+        )}
+        {/* The page is read-only; evidence goes through Penny so the founders hear it before it is sent. */}
+        {!/resolved/i.test(`${d.state} ${d.status}`) && <p className="empty">On a call, Penny can send PayPal a tracking number as proof of shipment, or a written note, as evidence.</p>}
+      </Card>
       <Card
         title="Messages"
         right={

@@ -66,6 +66,7 @@ function compactDispute(d: Dispute) {
     respondBy: d.respondBy,
     buyer: d.buyerEmail,
     lastMessages: d.messages.slice(-4).map((m) => `${m.by}: ${m.text}`),
+    evidenceSent: d.evidence.length,
   };
 }
 
@@ -265,6 +266,31 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       guard(async () => {
         await provider.messageDispute(dispute_id, message);
         return { sent: true, dispute_id };
+      }),
+  );
+
+  server.registerTool(
+    'provide_dispute_evidence',
+    {
+      description:
+        'Send PayPal evidence on a dispute (no money moves): a tracking number as proof the order shipped (carrier + tracking_number, best for "item not received"), or a written note with the facts (notes alone). Read it back and send when the founders agree.',
+      inputSchema: {
+        dispute_id: z.string(),
+        carrier: z.string().min(2).max(60).optional(),
+        tracking_number: z.string().min(3).max(60).optional(),
+        notes: z.string().max(2000).optional(),
+      },
+    },
+    ({ dispute_id, carrier, tracking_number, notes }) =>
+      guard(async () => {
+        if (tracking_number && !carrier) return { error: 'Which carrier shipped it? PayPal needs the carrier with the tracking number.' };
+        if (!tracking_number && !notes?.trim()) return { error: 'Give a tracking number or a note; there is no evidence to send yet.' };
+        await provider.provideDisputeEvidence(
+          dispute_id,
+          tracking_number && carrier ? { kind: 'fulfillment', carrier, trackingNumber: tracking_number, notes } : { kind: 'other', notes: notes!.trim() },
+        );
+        const spoken = tracking_number ? `Sent PayPal the ${carrier} tracking number as proof the order shipped${notes ? ', with your note' : ''}.` : 'Sent PayPal your note as evidence on the dispute.';
+        return { sent: true, dispute_id, spoken, page: pageUrl(env, withKey(`/p/dispute/${encodeURIComponent(dispute_id)}`)) };
       }),
   );
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapInvoiceStatus, toEvent, toInvoice } from '../src/providers/paypal';
+import { carrierFor, evidenceInput, mapInvoiceStatus, toDispute, toEvent, toInvoice } from '../src/providers/paypal';
 
 describe('toInvoice', () => {
   it('maps the fields Penny reads', () => {
@@ -52,5 +52,22 @@ describe('toEvent', () => {
     expect(toEvent({ id: 'WH-4', event_type: 'BILLING.PLAN.CREATED', resource: {} })?.type).toBe('other');
     expect(toEvent({ nope: true })).toBeNull();
     expect(toEvent(null)).toBeNull();
+  });
+});
+
+describe('dispute evidence', () => {
+  it('builds the provide-evidence input: tracking as proof of fulfillment, else a note', () => {
+    expect(evidenceInput({ kind: 'fulfillment', carrier: 'FedEx', trackingNumber: ' 1Z999 ', notes: 'Delivered 3 Nov' })).toEqual({
+      evidences: [{ evidence_type: 'PROOF_OF_FULFILLMENT', evidence_info: { tracking_info: [{ carrier_name: 'FEDEX', tracking_number: '1Z999' }] }, notes: 'Delivered 3 Nov' }],
+    });
+    expect(evidenceInput({ kind: 'other', notes: 'Signed contract attached to the thread.' })).toEqual({ evidences: [{ evidence_type: 'OTHER', notes: 'Signed contract attached to the thread.' }] });
+  });
+  it('names unknown carriers as OTHER', () => {
+    expect(carrierFor('ups')).toEqual({ carrier_name: 'UPS' });
+    expect(carrierFor('Royal Mail')).toEqual({ carrier_name: 'OTHER', carrier_name_other: 'Royal Mail' });
+  });
+  it('maps evidence already sent', () => {
+    const d = toDispute({ dispute_id: 'PP-D-1', evidences: [{ evidence_type: 'PROOF_OF_FULFILLMENT', date: '2026-11-01T00:00:00Z', evidence_info: { tracking_info: [{ carrier_name: 'OTHER', carrier_name_other: 'Royal Mail', tracking_number: 'RM1' }] } }] });
+    expect(d.evidence).toEqual([{ type: 'PROOF_OF_FULFILLMENT', notes: undefined, at: '2026-11-01T00:00:00Z', tracking: [{ carrier: 'Royal Mail', number: 'RM1' }] }]);
   });
 });
