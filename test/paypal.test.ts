@@ -44,6 +44,10 @@ describe('toEvent', () => {
     expect(e).toMatchObject({ type: 'payout.failed', refKind: 'payout', refId: 'B1' });
     expect(e?.summary).toBe('Payment of USD 50.00 to sam@example.com unclaimed');
   });
+  it('payout item failure carries the proposal id and the reason', () => {
+    const e = toEvent({ id: 'WH-5', event_type: 'PAYMENT.PAYOUTS-ITEM.FAILED', resource: { payout_batch_id: 'B1', errors: { message: 'Receiver is unregistered' }, payout_item: { sender_item_id: 'ap_0123456789ab-1', receiver: 'x@example.com', amount: { currency: 'USD', value: '5.00' } } } });
+    expect(e).toMatchObject({ type: 'payout.failed', payoutKey: 'ap_0123456789ab', reason: 'failed: Receiver is unregistered' });
+  });
   it('unknown events are kept but not alerted on; garbage is dropped', () => {
     expect(toEvent({ id: 'WH-4', event_type: 'BILLING.PLAN.CREATED', resource: {} })?.type).toBe('other');
     expect(toEvent({ nope: true })).toBeNull();

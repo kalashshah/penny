@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Approvals } from '../src/approvals';
+import { Approvals, runOrHold } from '../src/approvals';
 import type { Env } from '../src/env';
 import { handleWebhook } from '../src/events';
 import type { Memory } from '../src/memory';
@@ -60,5 +60,18 @@ describe('handleWebhook', () => {
     await deliver(paid);
     expect((await approvals.get(other.id))?.status).toBe('done');
     expect(calls.payout).toBe(1);
+  });
+
+  it('marks a payout PayPal later failed as failed, with why, and still alerts', async () => {
+    const { env, deliver, alerts } = webhookRig();
+    const approvals = new Approvals(env.DB, 't_1');
+    const out = await runOrHold({ approvals, provider: webhookRig().provider, threshold: 100, currency: 'USD' }, 'payout', 'Pay USD 50.00 to sam@example.com: x', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' });
+    expect(out.status).toBe('done');
+    await deliver({ id: 'WH-6', event_type: 'PAYMENT.PAYOUTS-ITEM.RETURNED', resource: { payout_batch_id: 'PB-1', payout_item: { sender_item_id: `${out.proposal.id}-1`, receiver: 'sam@example.com', amount: { currency: 'USD', value: '50.00' } } } });
+    const p = await approvals.get(out.proposal.id);
+    expect(p?.status).toBe('failed');
+    expect(p?.result).toMatch(/PayPal then reported it returned/);
+    const [a] = await alerts();
+    expect(a.detail).toMatch(/did not go through/);
   });
 });

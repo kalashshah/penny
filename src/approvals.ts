@@ -167,6 +167,20 @@ export class Approvals {
       .run();
   }
 
+  /**
+   * The rail took a payout and later reported it failed (denied, unclaimed, returned...): it is not done after all.
+   * Only a payout that ran, so a stray or replayed event cannot touch anything else.
+   */
+  async failPayout(id: string, reason: string): Promise<Proposal | null> {
+    const r = await this.db
+      .prepare(
+        "UPDATE proposals SET status = 'failed', result = COALESCE(result || ' ', '') || ? WHERE id = ? AND tenant_id = ? AND kind = 'payout' AND status IN ('done', 'approved') RETURNING *",
+      )
+      .bind(`PayPal then reported it ${reason}.`, id, this.tenantId)
+      .first<Row>();
+    return r ? fromRow(r) : null;
+  }
+
   /** Cron, across every tenant. */
   static async expireStale(db: D1Database, now = Date.now()): Promise<number> {
     const res = await db

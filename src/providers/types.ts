@@ -99,6 +99,10 @@ export interface PennyEvent {
   amount?: Money;
   refId?: string;
   refKind?: 'invoice' | 'dispute' | 'payout' | 'transaction';
+  /** payout.* only: the idempotency key Penny sent with the payout, which is the proposal's id. */
+  payoutKey?: string;
+  /** payout.failed only: why, in the rail's words, when it says. */
+  reason?: string;
   raw: unknown;
 }
 

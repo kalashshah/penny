@@ -479,13 +479,16 @@ export function toEvent(body: unknown): PennyEvent | null {
     const type: PennyEventType = t.endsWith('.SUCCESS') ? 'payout.completed' : t.endsWith('.DENIED') ? 'payout.failed' : 'other';
     const amount = money(r.batch_header?.amount);
     const id = r.batch_header?.payout_batch_id;
-    return { ...base, type, summary: `Payout batch ${id ?? ''} ${type === 'payout.completed' ? 'completed' : type === 'payout.failed' ? 'was denied' : 'is processing'} (${fmtMoney(amount)})`, amount, refId: id, refKind: 'payout' };
+    const payoutKey = r.batch_header?.sender_batch_header?.sender_batch_id;
+    return { ...base, type, summary: `Payout batch ${id ?? ''} ${type === 'payout.completed' ? 'completed' : type === 'payout.failed' ? 'was denied' : 'is processing'} (${fmtMoney(amount)})`, amount, refId: id, refKind: 'payout', payoutKey, reason: type === 'payout.failed' ? 'PayPal denied the payout batch' : undefined };
   }
   if (t.startsWith('PAYMENT.PAYOUTS-ITEM.')) {
     const item = r.payout_item ?? {};
     const amount = money(item.amount);
     const ok = t.endsWith('.SUCCEEDED');
     const state = t.split('.').pop()?.toLowerCase() ?? '';
+    // payout() sends sender_item_id `${proposalId}-1`.
+    const sender = typeof item.sender_item_id === 'string' ? item.sender_item_id : undefined;
     return {
       ...base,
       type: ok ? 'payout.completed' : 'payout.failed',
@@ -493,6 +496,8 @@ export function toEvent(body: unknown): PennyEvent | null {
       amount,
       refId: r.payout_batch_id,
       refKind: 'payout',
+      payoutKey: sender?.replace(/-1$/, ''),
+      reason: ok ? undefined : [state, r.errors?.message ?? (state === 'unclaimed' ? 'the recipient has no PayPal account yet; PayPal returns the money if it stays unclaimed for 30 days' : undefined)].filter(Boolean).join(': '),
     };
   }
   if (t === 'PAYMENT.CAPTURE.COMPLETED' || t === 'PAYMENT.CAPTURE.REFUNDED') {

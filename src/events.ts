@@ -82,6 +82,14 @@ export async function handleWebhook(
       page = r.page ?? page;
     }
   }
+  // A payout Penny reported as paid that PayPal later failed: the proposal says so now, not "done".
+  if (event.type === 'payout.failed' && event.payoutKey) {
+    const p = await new Approvals(env.DB, t.id).failPayout(event.payoutKey, event.reason ?? 'failed');
+    if (p) {
+      detail = `${p.description} did not go through${event.reason ? ` (${event.reason})` : ''}. ${detail}`;
+      page = `${env.PUBLIC_URL}/p/proposal/${p.id}?k=${encodeURIComponent(t.pageKey)}`;
+    }
+  }
   if (event.type === 'invoice.cancelled' && event.refId) {
     const off = await callOffFor(env, t, event.refId, 'The invoice it waited on was cancelled.');
     if (off) detail = `${detail} ${off}`;
