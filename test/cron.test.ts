@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { deadlineAlerts } from '../src/cron';
-import type { Dispute, Invoice } from '../src/providers/types';
+import { Approvals } from '../src/approvals';
+import { deadlineAlerts, pollWaiting } from '../src/cron';
+import type { Env } from '../src/env';
+import { RailError, type Dispute, type Invoice, type PaymentProvider } from '../src/providers/types';
+import { fakeD1 } from './helpers/d1';
 
 const now = Date.UTC(2026, 10, 20, 12);
 const inv = (id: string, dueDate: string, status: Invoice['status'] = 'sent'): Invoice => ({
@@ -27,5 +30,26 @@ describe('deadlineAlerts', () => {
     const a = deadlineAlerts([], [dispute('D1', '2026-11-21T12:00:00Z'), dispute('D2', '2026-11-25T12:00:00Z'), dispute('D3', '2026-11-19T12:00:00Z'), dispute('D4', '2026-11-21T00:00:00Z', 'RESOLVED')], now);
     expect(a.map((x) => x.key)).toEqual(['respond-by:D1:2026-11-21T12:00:00Z']);
     expect(a[0].title).toMatch(/within 24 hours/);
+  });
+});
+
+describe('pollWaiting', () => {
+  it('calls off a payout whose invoice PayPal no longer has', async () => {
+    const env = { DB: fakeD1(), PUBLIC_URL: 'https://penny.test', PENNY_MASTER_KEY: '' } as Env;
+    await env.DB.prepare("INSERT INTO user (id, email, name) VALUES ('u1', 'o@x.test', 'O')").run();
+    await env.DB.prepare(
+      "INSERT INTO tenants (id, owner_user_id, business_name, paypal_client_id, paypal_secret_ct, paypal_secret_iv, mcp_token_hash, mcp_token_ct, mcp_token_iv, page_key, created_at) VALUES ('t_1', 'u1', 'Biz', 'APP', 'ct', 'iv', 'h', 'c', 'i', 'pk', 0)",
+    ).run();
+    const approvals = new Approvals(env.DB, 't_1');
+    const p = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-GONE');
+    const provider = {
+      getInvoice: async () => {
+        throw new RailError('PayPal GET /v2/invoicing/invoices/INV2-GONE failed (404): RESOURCE_NOT_FOUND', 404);
+      },
+    } as unknown as PaymentProvider;
+    expect(await pollWaiting(env, 10, -1, async () => provider)).toBe(1);
+    const off = await approvals.get(p.id);
+    expect(off?.status).toBe('rejected');
+    expect(off?.result).toMatch(/no longer has the invoice/);
   });
 });

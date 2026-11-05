@@ -123,6 +123,16 @@ export class Approvals {
     return (r.results ?? []).map(fromRow);
   }
 
+  /**
+   * Proposals this invoice's payment already released (pending since then, at most `sinceMs` ago): what a webhook
+   * retry finds when the first delivery died between release() and running or announcing them.
+   */
+  async releasedPending(invoiceId: string, sinceMs: number, now = Date.now()): Promise<Proposal[]> {
+    return (
+      await rows<Row>(this.db.prepare("SELECT * FROM proposals WHERE tenant_id = ? AND after_invoice = ? AND status = 'pending' AND created_at >= ?").bind(this.tenantId, invoiceId, now - sinceMs))
+    ).map(fromRow);
+  }
+
   /** The invoice will never be paid (cancelled, refunded): what waited on it is called off, with why. */
   async callOff(invoiceId: string, why: string): Promise<Proposal[]> {
     const r = await this.db
@@ -270,8 +280,11 @@ export async function runOrHold(
 
 /** A customer paid: run what was waiting on it if small, otherwise leave it pending for a yes. */
 /** `alwaysAsk`: the money came in outside PayPal (cash, cheque), so nothing pays out of the balance without a yes. */
-export async function releaseWaiting(deps: MoneyDeps, invoiceId: string, opts: { alwaysAsk?: boolean } = {}): Promise<ActionOutcome[]> {
-  const released = await deps.approvals.release(invoiceId);
+/** `resume`: also take up ones already released in the last day but never run or announced (a retried webhook). */
+export async function releaseWaiting(deps: MoneyDeps, invoiceId: string, opts: { alwaysAsk?: boolean; resume?: boolean } = {}): Promise<ActionOutcome[]> {
+  let released = await deps.approvals.release(invoiceId);
+  // Running one again is safe: claim is the lock, so one that did run is reported as unchanged, not paid twice.
+  if (!released.length && opts.resume) released = await deps.approvals.releasedPending(invoiceId, RELEASED_TTL_MS);
   return Promise.all(
     released.map(async (p) => {
       if (opts.alwaysAsk || needsApproval({ value: p.amount, currency: p.currency }, deps.threshold, deps.currency)) return { status: 'needs_approval' as const, proposal: p };

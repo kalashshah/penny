@@ -116,4 +116,26 @@ describe('handleWebhook', () => {
     expect((await approvals.get(p.id))?.status).toBe('pending');
     expect(calls.payout).toBe(0);
   });
+
+  it('a retry after a crash between release and running still runs what was released, once', async () => {
+    const { env, deliver, calls } = webhookRig();
+    const approvals = new Approvals(env.DB, 't_1');
+    const p = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
+    // The first delivery stored the event and released the payout, then died.
+    await env.DB.prepare("INSERT INTO events (id, tenant_id, provider, type, summary, payload, received_at) VALUES ('t_1:WH-1', 't_1', 'paypal', 'invoice.paid', 's', '{}', 0)").run();
+    await approvals.release('INV2-1');
+    await deliver(paid);
+    expect((await approvals.get(p.id))?.status).toBe('done');
+    expect(calls.payout).toBe(1);
+  });
+
+  it('a refunded invoice calls off what waited on it', async () => {
+    const { env, deliver } = webhookRig();
+    const approvals = new Approvals(env.DB, 't_1');
+    const p = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-3');
+    await deliver({ id: 'WH-11', event_type: 'INVOICING.INVOICE.REFUNDED', resource: { invoice: { id: 'INV2-3', amount: { currency_code: 'USD', value: '50.00' } } } });
+    const off = await approvals.get(p.id);
+    expect(off?.status).toBe('rejected');
+    expect(off?.result).toMatch(/refunded/);
+  });
 });

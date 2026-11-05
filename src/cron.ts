@@ -6,9 +6,9 @@ import { sendDigests } from './digest';
 import { callOffFor, createAlert, releaseFor } from './events';
 import { Memory } from './memory';
 import { providerFor } from './providers';
-import type { Dispute, Invoice } from './providers/types';
-import { fmtMoney } from './providers/types';
-import { isConnected, Tenants } from './tenants';
+import type { Dispute, Invoice, PaymentProvider } from './providers/types';
+import { fmtMoney, RailError } from './providers/types';
+import { isConnected, Tenants, type Tenant } from './tenants';
 
 /** Every five minutes: file ended calls' transcripts into memory, expire stale approvals, catch missed invoice webhooks; hourly, deadlines and the weekly digest. */
 export async function runCron(env: Env): Promise<void> {
@@ -28,7 +28,12 @@ export async function runCron(env: Env): Promise<void> {
  * So ask PayPal about the invoices waiting payouts hang on, a few per run (a random few, so a backlog
  * bigger than one batch is still covered over a few runs), skipping ones younger than a webhook needs.
  */
-export async function pollWaiting(env: Env, limit = 10, minAgeMs = 5 * 60_000): Promise<number> {
+export async function pollWaiting(
+  env: Env,
+  limit = 10,
+  minAgeMs = 5 * 60_000,
+  providerOf: (tenants: Tenants, t: Tenant) => Promise<PaymentProvider> = (tenants, t) => providerFor(env, tenants, t),
+): Promise<number> {
   const due = await rows<{ tenant_id: string; after_invoice: string }>(
     env.DB.prepare("SELECT tenant_id, after_invoice FROM proposals WHERE status = 'waiting' AND created_at < ? GROUP BY tenant_id, after_invoice ORDER BY RANDOM() LIMIT ?").bind(
       Date.now() - minAgeMs,
@@ -41,8 +46,18 @@ export async function pollWaiting(env: Env, limit = 10, minAgeMs = 5 * 60_000): 
     try {
       const t = await tenants.byId(tenant_id);
       if (!t || !isConnected(t)) continue;
-      const provider = await providerFor(env, tenants, t);
-      const inv = await provider.getInvoice(after_invoice);
+      const provider = await providerOf(tenants, t);
+      let inv: Invoice;
+      try {
+        inv = await provider.getInvoice(after_invoice);
+      } catch (e) {
+        if (!(e instanceof RailError && e.status === 404)) throw e;
+        // Deleted, or never in this account: it will never be paid, so what waits on it is called off rather than left forever.
+        const off = await callOffFor(env, t, after_invoice, 'PayPal no longer has the invoice it waited on (it was deleted, or is not in this PayPal account).');
+        if (off) await createAlert(env, t.id, { title: `Invoice ${after_invoice} is gone from PayPal`, detail: off });
+        acted++;
+        continue;
+      }
       const page = `${env.PUBLIC_URL}/p/invoice/${encodeURIComponent(inv.id)}?k=${encodeURIComponent(t.pageKey)}`;
       if (inv.status === 'paid') {
         const r = await releaseFor(env, t, provider, inv.id, { invoice: inv });

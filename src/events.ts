@@ -77,7 +77,8 @@ export async function handleWebhook(
   let detail = DETAIL[event.type] ?? '';
   let page = pageFor(env, t, event);
   if (event.type === 'invoice.paid' && event.refId) {
-    const r = await releaseFor(env, t, provider, event.refId);
+    // A redelivery may follow one that released the payouts and died before running or announcing them.
+    const r = await releaseFor(env, t, provider, event.refId, { resume: !inserted.meta.changes });
     if (r) {
       detail = r.detail;
       page = r.page ?? page;
@@ -103,8 +104,8 @@ export async function handleWebhook(
     const p = await new Approvals(env.DB, t.id).completePayout(event.payoutKey, event.refId);
     if (p) page = `${env.PUBLIC_URL}/p/proposal/${p.id}?k=${encodeURIComponent(t.pageKey)}`;
   }
-  if (event.type === 'invoice.cancelled' && event.refId) {
-    const off = await callOffFor(env, t, event.refId, 'The invoice it waited on was cancelled.');
+  if ((event.type === 'invoice.cancelled' || event.type === 'invoice.refunded') && event.refId) {
+    const off = await callOffFor(env, t, event.refId, `The invoice it waited on was ${event.type === 'invoice.cancelled' ? 'cancelled' : 'refunded'}.`);
     if (off) detail = `${detail} ${off}`;
   }
   // A retry after the alert was written but before processed was set should not alert twice.
@@ -122,10 +123,10 @@ export async function handleWebhook(
  * (cash, cheque, "marked as paid" do not put money in the balance) every released payout waits for a yes.
  * `invoice`: the invoice as just fetched, to save asking PayPal again.
  */
-export async function releaseFor(env: Env, t: Tenant, provider: PaymentProvider, invoiceId: string, opts: { invoice?: Invoice } = {}): Promise<{ detail: string; page?: string } | null> {
+export async function releaseFor(env: Env, t: Tenant, provider: PaymentProvider, invoiceId: string, opts: { invoice?: Invoice; resume?: boolean } = {}): Promise<{ detail: string; page?: string } | null> {
   const inv = opts.invoice ?? (await provider.getInvoice(invoiceId));
   if (inv.status !== 'paid' || inv.due.value > 0) return null;
-  const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, invoiceId, { alwaysAsk: !inv.paidViaRail });
+  const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, invoiceId, { alwaysAsk: !inv.paidViaRail, resume: opts.resume });
   if (!released.length) return null;
   const detail = released.map((o) => (o.status === 'needs_approval' ? `You asked to pay ${o.proposal.input.recipientEmail} ${o.proposal.currency} ${o.proposal.amount.toFixed(2)} once this came in. It needs your yes.` : (o.result ?? ''))).join(' ');
   const ask = released.find((o) => o.status === 'needs_approval');
