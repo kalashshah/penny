@@ -133,16 +133,17 @@ describe('cancel_invoice and record_invoice_payment', () => {
     expect((await run('cancel_invoice', { invoice_id: inv.id })).error).toMatch(/is paid/);
     expect(calls).toEqual([]);
   });
-  it('a cheque that pays it off releases what waited on it', async () => {
+  it('a cheque that pays it off releases what waited on it, for a yes', async () => {
     const { run, approvals, calls } = toolRig(open);
     const p = await approvals.create('payout', 'Pay Sam when Acme pays', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@x.test' }, open.id);
     const part = await run('record_invoice_payment', { invoice_id: open.id, method: 'CHECK', amount: 400 });
     expect(part.spoken).toBe('Recorded USD 400.00 by cheque on invoice 0042; USD 600.00 is still due.');
     expect((await approvals.get(p.id))?.status).toBe('waiting');
     const rest = await run('record_invoice_payment', { invoice_id: open.id, method: 'CASH' });
-    expect(rest.spoken).toMatch(/^Recorded USD 600.00 by cash on invoice 0042; it is now paid in full\. Paid USD 50.00 to sam@x.test/);
-    expect(calls).toEqual(['record 400', 'record 600', 'payout']);
-    expect((await approvals.get(p.id))?.status).toBe('done');
+    expect(rest.spoken).toMatch(/^Recorded USD 600.00 by cash on invoice 0042; it is now paid in full\. You asked to pay sam@x.test USD 50.00 once this came in\. It needs your yes\./);
+    // The cash is not in PayPal, so even a small payout waits for a yes instead of leaving the balance.
+    expect(calls).toEqual(['record 400', 'record 600']);
+    expect((await approvals.get(p.id))?.status).toBe('pending');
   });
 });
 
