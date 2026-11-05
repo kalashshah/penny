@@ -111,7 +111,7 @@ export function refundable(i: Invoice, requested?: number): { ok: true; money: M
 /** execute() records "Payout <batch id> is <status>." in the proposal's result; that is the only place the batch id is kept. */
 export function payoutBatchId(p: Pick<Proposal, 'kind' | 'result'>): string | null {
   if (p.kind !== 'payout') return null;
-  return /\bPayout ([A-Z0-9]+) is\b/i.exec(p.result ?? '')?.[1] ?? null;
+  return /\bPayout (\S+) is\b/.exec(p.result ?? '')?.[1] ?? null;
 }
 
 /** Where a payout proposal stands before (or without) reaching PayPal, in a sentence. */
@@ -125,6 +125,8 @@ export function describeUnsent(p: Pick<Proposal, 'status' | 'result'>): string {
       return 'It was approved and is being sent to PayPal right now.';
     case 'failed':
       return `It never reached PayPal: ${p.result ?? 'it failed'}.`;
+    case 'done':
+      return `It ran, but Penny has no PayPal batch id to check: ${p.result ?? ''}`;
     default:
       return `It was never paid: it was ${p.status}${p.result ? ` (${p.result})` : ''}.`;
   }
@@ -476,17 +478,23 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
 
   server.registerTool(
     'payout_status',
-    { description: 'Where a payout stands at PayPal (went through, pending, unclaimed, failed). Give the proposal_id Penny returned when paying, or a PayPal payout_batch_id.', inputSchema: { proposal_id: z.string().optional(), payout_batch_id: z.string().optional() } },
-    ({ proposal_id, payout_batch_id }) =>
+    {
+      description:
+        'Where a payout stands at PayPal (went through, pending, unclaimed, failed). Give the proposal_id from when it was paid, the recipient_email for the latest payout to that person ("did Sam get paid?"), or a PayPal payout_batch_id.',
+      inputSchema: { proposal_id: z.string().optional(), recipient_email: z.string().email().optional(), payout_batch_id: z.string().optional() },
+    },
+    ({ proposal_id, recipient_email, payout_batch_id }) =>
       guard(async () => {
         let batchId = payout_batch_id;
         if (!batchId) {
-          if (!proposal_id) return { error: 'Which payout? Give the proposal id or the PayPal payout batch id.' };
-          const p = await approvals.get(proposal_id);
-          if (!p) return { error: 'No such proposal' };
+          let p: Proposal | null | undefined;
+          if (proposal_id) p = await approvals.get(proposal_id);
+          else if (recipient_email) p = (await approvals.listRecent(50)).find((x) => x.kind === 'payout' && String(x.input.recipientEmail).toLowerCase() === recipient_email.toLowerCase());
+          else return { error: 'Which payout? Give the proposal id, the recipient\'s email, or the PayPal payout batch id.' };
+          if (!p) return { error: proposal_id ? 'No such proposal' : `Penny has no recent payout to ${recipient_email}.` };
           if (p.kind !== 'payout') return { error: `That is a ${p.kind.replace('_', ' ')}, not a payout.` };
           batchId = payoutBatchId(p) ?? undefined;
-          if (!batchId) return { status: p.status, spoken: describeUnsent(p), page: pageUrl(env, withKey(`/p/proposal/${p.id}`)) };
+          if (!batchId) return { status: p.status, description: p.description, spoken: describeUnsent(p), page: pageUrl(env, withKey(`/p/proposal/${p.id}`)) };
         }
         const b = await provider.getPayout(batchId);
         return { batch: b.id, batchStatus: b.status, items: b.items.map((i) => ({ status: i.status, amount: fmtMoney(i.amount), recipient: i.recipient, error: i.error })), spoken: describePayout(b) };

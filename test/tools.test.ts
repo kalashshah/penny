@@ -103,6 +103,10 @@ function toolRig(invoice: Invoice) {
       current = { ...current, status: due ? 'partially_paid' : 'paid', due: { ...current.due, value: due } };
       return 'EXTR-1';
     },
+    getPayout: async (id: string) => {
+      calls.push(`getPayout ${id}`);
+      return { id, status: 'success', items: [{ id: 'I1', status: 'unclaimed', amount: { value: 50, currency: 'USD' }, recipient: 'sam@x.test' }] };
+    },
     payout: async ({ amount, recipientEmail }: { amount: Money; recipientEmail: string }) => {
       calls.push('payout');
       return { id: 'PB-1', status: 'pending', amount, recipient: recipientEmail };
@@ -139,5 +143,19 @@ describe('cancel_invoice and record_invoice_payment', () => {
     expect(rest.spoken).toMatch(/^Recorded USD 600.00 by cash on invoice 0042; it is now paid in full\. Paid USD 50.00 to sam@x.test/);
     expect(calls).toEqual(['record 400', 'record 600', 'payout']);
     expect((await approvals.get(p.id))?.status).toBe('done');
+  });
+});
+
+describe('payout_status tool', () => {
+  it('finds the latest payout to a recipient and asks PayPal about its batch', async () => {
+    const { run, approvals, calls } = toolRig(inv);
+    const r = await run('pay', { recipient_email: 'sam@x.test', amount: 50, note: 'logo' });
+    expect(r.status).toBe('done');
+    const s = await run('payout_status', { recipient_email: 'SAM@x.test' });
+    expect(calls).toEqual(['payout', 'getPayout PB-1']);
+    expect(s.spoken).toMatch(/^USD 50.00 to sam@x.test is unclaimed/);
+    const held = await approvals.create('payout', 'Pay Jo', { value: 500, currency: 'USD' }, { recipientEmail: 'jo@x.test' });
+    expect((await run('payout_status', { proposal_id: held.id })).spoken).toBe('It has not been paid: it is still waiting for a yes.');
+    expect((await run('payout_status', { recipient_email: 'nobody@x.test' })).error).toMatch(/no recent payout/);
   });
 });
