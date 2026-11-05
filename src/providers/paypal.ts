@@ -15,6 +15,7 @@ import type {
   Transaction,
 } from './types';
 import { fmtMoney } from './types';
+import { sha256Hex } from '../crypto';
 
 export interface PayPalConfig {
   clientId: string;
@@ -48,8 +49,9 @@ const OPEN_STATUSES = ['SENT', 'UNPAID', 'PARTIALLY_PAID', 'PAYMENT_PENDING'];
 // Search filter only: search-invoices rejects PAID_EXTERNAL even though invoices can carry it.
 const PAID_STATUSES = ['PAID', 'MARKED_AS_PAID'];
 
-// Access tokens per isolate, keyed by env and client id: a token belongs to the app, not to the tenant using it,
-// so new credentials (or sandbox → live) never reuse a token minted for the old ones.
+// Access tokens per isolate, keyed by env, client id and a hash of the secret. Client ids are not secret, so a key
+// without the secret would hand another tenant's cached token to anyone who typed that id with any secret.
+// Tenants sharing one app with the same secret (the demo sandbox) still share its token, which is fine.
 const tokens = new Map<string, { token: string; exp: number }>();
 
 export function isWebhookVerificationOff(env: { WEBHOOK_VERIFY?: string }): boolean {
@@ -64,14 +66,15 @@ export class PayPalProvider implements PaymentProvider {
     return HOSTS[this.cfg.env];
   }
 
-  private get tokenKey(): string {
-    return `${this.cfg.env}:${this.cfg.clientId}`;
+  private async tokenKey(): Promise<string> {
+    return `${this.cfg.env}:${this.cfg.clientId}:${await sha256Hex(`${this.cfg.clientId}:${this.cfg.clientSecret}`)}`;
   }
 
-  private async token(): Promise<string> {
-    const key = this.tokenKey;
+  /** `fresh` skips the cache, so the secret itself is put to PayPal. */
+  private async token(fresh = false): Promise<string> {
+    const key = await this.tokenKey();
     const cached = tokens.get(key);
-    if (cached && cached.exp > Date.now() + 60_000) return cached.token;
+    if (!fresh && cached && cached.exp > Date.now() + 60_000) return cached.token;
     const res = await fetch(`${this.host}/v1/oauth2/token`, {
       method: 'POST',
       headers: {
@@ -86,6 +89,11 @@ export class PayPalProvider implements PaymentProvider {
     return j.access_token;
   }
 
+  /** Connecting checks the credentials themselves: a fresh token from PayPal, never one from the cache. Throws if PayPal rejects them. */
+  async checkCredentials(): Promise<void> {
+    await this.token(true);
+  }
+
   private async api<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
     // FormData carries its own multipart content-type (with the boundary), so it must not get the JSON one.
     const form = body instanceof FormData;
@@ -98,7 +106,7 @@ export class PayPalProvider implements PaymentProvider {
     let res = await send();
     // A cached token keeps the scopes it was issued with; one minted after a feature is enabled on the app has them.
     if (res.status === 401 || res.status === 403) {
-      tokens.delete(this.tokenKey);
+      tokens.delete(await this.tokenKey());
       res = await send();
     }
     const text = await res.text();

@@ -187,6 +187,7 @@ export class Tenants {
     const notes: string[] = [];
     const provider = new PayPalProvider({ clientId: input.clientId, clientSecret: input.clientSecret, env: input.env, businessName: t.businessName });
     try {
+      await provider.checkCredentials();
       await provider.listInvoices({ status: 'all', limit: 1 });
     } catch (e) {
       return { ok: false, notes: [e instanceof Error ? e.message : String(e)] };

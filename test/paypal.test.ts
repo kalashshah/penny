@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { carrierFor, evidenceInput, mapInvoiceStatus, toDispute, toEvent, toInvoice, toPayoutBatch } from '../src/providers/paypal';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PayPalProvider, carrierFor, evidenceInput, mapInvoiceStatus, toDispute, toEvent, toInvoice, toPayoutBatch } from '../src/providers/paypal';
 
 describe('toInvoice', () => {
   it('maps the fields Penny reads', () => {
@@ -76,5 +76,42 @@ describe('toPayoutBatch', () => {
   it('maps the batch and its items', () => {
     const b = toPayoutBatch({ batch_header: { payout_batch_id: 'B1', batch_status: 'SUCCESS' }, items: [{ payout_item_id: 'I1', transaction_status: 'UNCLAIMED', payout_item: { amount: { currency: 'USD', value: '40.00' }, receiver: 'sam@x.test' } }] });
     expect(b).toEqual({ id: 'B1', status: 'success', items: [{ id: 'I1', status: 'unclaimed', amount: { value: 40, currency: 'USD' }, recipient: 'sam@x.test', error: undefined }] });
+  });
+});
+
+describe('access token cache', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  // PayPal's token endpoint, accepting only one secret for the app; every other call just echoes the bearer it got.
+  function fakePayPal() {
+    const auth: string[] = [];
+    const bearers: string[] = [];
+    vi.stubGlobal('fetch', async (url: string, init: { headers: Record<string, string> }) => {
+      if (url.endsWith('/v1/oauth2/token')) {
+        auth.push(init.headers.Authorization);
+        if (init.headers.Authorization !== `Basic ${btoa('APP1:right')}`) return new Response('{"error":"invalid_client"}', { status: 401 });
+        return Response.json({ access_token: `tok${auth.length}`, expires_in: 3600 });
+      }
+      bearers.push(init.headers.Authorization);
+      return Response.json({ items: [] });
+    });
+    return { auth, bearers };
+  }
+  const pp = (clientSecret: string) => new PayPalProvider({ clientId: 'APP1', clientSecret, env: 'sandbox', businessName: 'X' });
+
+  it('never hands a cached token to someone with the same client id and another secret', async () => {
+    const { auth, bearers } = fakePayPal();
+    await pp('right').listInvoices({ status: 'all', limit: 1 });
+    await expect(pp('wrong').listInvoices({ status: 'all', limit: 1 })).rejects.toThrow(/auth failed/);
+    await expect(pp('wrong').checkCredentials()).rejects.toThrow(/auth failed/);
+    expect(bearers).toEqual(['Bearer tok1']);
+    expect(auth).toHaveLength(3);
+  });
+
+  it('checking credentials asks PayPal even when a token is cached', async () => {
+    const { auth } = fakePayPal();
+    await pp('right').listInvoices({ status: 'all', limit: 1 }); // cached by the test above, or minted now
+    const before = auth.length;
+    await pp('right').checkCredentials();
+    expect(auth).toHaveLength(before + 1);
   });
 });
