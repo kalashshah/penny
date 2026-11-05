@@ -14,7 +14,6 @@ export async function providerFor(env: Env, tenants: Tenants, t: Tenant): Promis
         env: t.paypalEnv,
         webhookId: t.paypalWebhookId ?? undefined,
         businessName: t.businessName,
-        cacheKey: t.id,
       });
     }
     default:

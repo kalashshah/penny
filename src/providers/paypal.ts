@@ -19,8 +19,6 @@ export interface PayPalConfig {
   env: 'sandbox' | 'live';
   webhookId?: string;
   businessName: string;
-  /** Keys the access-token cache; one entry per tenant. */
-  cacheKey?: string;
 }
 
 const HOSTS = { sandbox: 'https://api-m.sandbox.paypal.com', live: 'https://api-m.paypal.com' } as const;
@@ -47,7 +45,8 @@ const OPEN_STATUSES = ['SENT', 'UNPAID', 'PARTIALLY_PAID', 'PAYMENT_PENDING'];
 // Search filter only: search-invoices rejects PAID_EXTERNAL even though invoices can carry it.
 const PAID_STATUSES = ['PAID', 'MARKED_AS_PAID'];
 
-// Access tokens per tenant, per isolate. Keyed by client id, which is what a token belongs to.
+// Access tokens per isolate, keyed by env and client id: a token belongs to the app, not to the tenant using it,
+// so new credentials (or sandbox → live) never reuse a token minted for the old ones.
 const tokens = new Map<string, { token: string; exp: number }>();
 
 export function isWebhookVerificationOff(env: { WEBHOOK_VERIFY?: string }): boolean {
@@ -63,7 +62,7 @@ export class PayPalProvider implements PaymentProvider {
   }
 
   private get tokenKey(): string {
-    return `${this.cfg.env}:${this.cfg.cacheKey ?? this.cfg.clientId}`;
+    return `${this.cfg.env}:${this.cfg.clientId}`;
   }
 
   private async token(): Promise<string> {
