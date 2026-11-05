@@ -104,6 +104,8 @@ export type PennyEventType =
   | 'dispute.resolved'
   | 'payout.completed'
   | 'payout.failed'
+  /** A payout item that has not reached the recipient yet but is not final either (unclaimed, held). */
+  | 'payout.pending'
   | 'payment.received'
   | 'payment.refunded'
   | 'other';
@@ -117,7 +119,7 @@ export interface PennyEvent {
   refKind?: 'invoice' | 'dispute' | 'payout' | 'transaction';
   /** payout.* only: the idempotency key Penny sent with the payout, which is the proposal's id. */
   payoutKey?: string;
-  /** payout.failed only: why, in the rail's words, when it says. */
+  /** payout.failed and payout.pending only: why, in the rail's words, when it says. */
   reason?: string;
   raw: unknown;
 }

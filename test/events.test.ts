@@ -74,4 +74,28 @@ describe('handleWebhook', () => {
     const [a] = await alerts();
     expect(a.detail).toMatch(/did not go through/);
   });
+
+  it('an unclaimed payout only informs; a later success settles it, and undoes an old unclaimed failure', async () => {
+    const { env, deliver, alerts } = webhookRig();
+    const approvals = new Approvals(env.DB, 't_1');
+    const deps = { approvals, provider: webhookRig().provider, threshold: 100, currency: 'USD' };
+    const out = await runOrHold(deps, 'payout', 'Pay USD 50.00 to sam@example.com: x', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' });
+    const item = (id: string, state: string, key: string) => ({ id, event_type: `PAYMENT.PAYOUTS-ITEM.${state}`, resource: { payout_batch_id: 'PB-1', payout_item: { sender_item_id: `${key}-1`, receiver: 'sam@example.com', amount: { currency: 'USD', value: '50.00' } } } });
+    await deliver(item('WH-7', 'UNCLAIMED', out.proposal.id));
+    expect((await approvals.get(out.proposal.id))?.status).toBe('done');
+    const [a] = await alerts();
+    expect(a.detail).not.toMatch(/did not go through/);
+    expect(a.detail).toMatch(/has not reached them yet/);
+
+    // A proposal the old code failed on an unclaimed report comes back to done when PayPal says it went through.
+    const old = await runOrHold(deps, 'payout', 'Pay USD 40.00 to jo@example.com: y', { value: 40, currency: 'USD' }, { recipientEmail: 'jo@example.com' });
+    await approvals.failPayout(old.proposal.id, 'unclaimed: no account yet');
+    await deliver(item('WH-8', 'SUCCEEDED', old.proposal.id));
+    expect((await approvals.get(old.proposal.id))?.status).toBe('done');
+
+    // A final failure stays failed whatever comes later.
+    await deliver(item('WH-9', 'RETURNED', out.proposal.id));
+    await deliver(item('WH-10', 'SUCCEEDED', out.proposal.id));
+    expect((await approvals.get(out.proposal.id))?.status).toBe('failed');
+  });
 });

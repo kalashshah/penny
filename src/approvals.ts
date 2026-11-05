@@ -173,7 +173,7 @@ export class Approvals {
   }
 
   /**
-   * The rail took a payout and later reported it failed (denied, unclaimed, returned...): it is not done after all.
+   * The rail took a payout and later reported it failed for good (denied, returned, blocked...): it is not done after all.
    * Only a payout that ran, so a stray or replayed event cannot touch anything else.
    */
   async failPayout(id: string, reason: string): Promise<Proposal | null> {
@@ -182,6 +182,21 @@ export class Approvals {
         "UPDATE proposals SET status = 'failed', result = COALESCE(result || ' ', '') || ? WHERE id = ? AND tenant_id = ? AND kind = 'payout' AND status IN ('done', 'approved') RETURNING *",
       )
       .bind(`PayPal then reported it ${reason}.`, id, this.tenantId)
+      .first<Row>();
+    return r ? fromRow(r) : null;
+  }
+
+  /**
+   * The rail reported the payout went through. Settles one still marked running, and undoes a failure that an earlier
+   * not-final report (unclaimed, held) recorded before those stopped counting as failures. Never touches a final failure.
+   */
+  async completePayout(id: string, batchId?: string): Promise<Proposal | null> {
+    // One still running may have no result yet; the batch id goes in it, since payout_status reads it from there.
+    const r = await this.db
+      .prepare(
+        "UPDATE proposals SET status = 'done', result = COALESCE(result || ' ', ?) || 'PayPal then reported it went through.' WHERE id = ? AND tenant_id = ? AND kind = 'payout' AND (status = 'approved' OR (status = 'failed' AND (result LIKE '%PayPal then reported it unclaimed%' OR result LIKE '%PayPal then reported it held%'))) RETURNING *",
+      )
+      .bind(batchId ? `Payout ${batchId} is success. ` : '', id, this.tenantId)
       .first<Row>();
     return r ? fromRow(r) : null;
   }

@@ -24,6 +24,7 @@ const DETAIL: Partial<Record<PennyEvent['type'], string>> = {
   'dispute.resolved': 'Penny can tell you how it ended.',
   'payout.failed': 'Someone did not get paid. Penny can retry or try another email.',
   'payout.completed': 'The payout went through.',
+  'payout.pending': 'It has not reached them yet, but it has not failed either; nothing needs doing for now.',
   'payment.received': 'A payment came in outside an invoice.',
   'payment.refunded': 'A refund was processed.',
 };
@@ -89,6 +90,18 @@ export async function handleWebhook(
       detail = `${p.description} did not go through${event.reason ? ` (${event.reason})` : ''}. ${detail}`;
       page = `${env.PUBLIC_URL}/p/proposal/${p.id}?k=${encodeURIComponent(t.pageKey)}`;
     }
+  }
+  // Not final (unclaimed, held): say where it stands, and leave the proposal as it is.
+  if (event.type === 'payout.pending' && event.payoutKey) {
+    const p = await new Approvals(env.DB, t.id).get(event.payoutKey);
+    if (p?.kind === 'payout') {
+      detail = `${p.description} has not reached them yet${event.reason ? ` (${event.reason})` : ''}. It has not failed; PayPal will report again when it settles.`;
+      page = `${env.PUBLIC_URL}/p/proposal/${p.id}?k=${encodeURIComponent(t.pageKey)}`;
+    }
+  }
+  if (event.type === 'payout.completed' && event.payoutKey) {
+    const p = await new Approvals(env.DB, t.id).completePayout(event.payoutKey, event.refId);
+    if (p) page = `${env.PUBLIC_URL}/p/proposal/${p.id}?k=${encodeURIComponent(t.pageKey)}`;
   }
   if (event.type === 'invoice.cancelled' && event.refId) {
     const off = await callOffFor(env, t, event.refId, 'The invoice it waited on was cancelled.');

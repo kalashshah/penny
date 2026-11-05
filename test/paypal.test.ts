@@ -39,10 +39,17 @@ describe('toEvent', () => {
     expect(e).toMatchObject({ type: 'dispute.created', refId: 'PP-D-1', refKind: 'dispute' });
     expect(e?.summary).toContain('not received');
   });
-  it('payout item failed', () => {
+  it('payout item unclaimed or held is not a failure', () => {
     const e = toEvent({ id: 'WH-3', event_type: 'PAYMENT.PAYOUTS-ITEM.UNCLAIMED', resource: { payout_batch_id: 'B1', payout_item: { receiver: 'sam@example.com', amount: { currency: 'USD', value: '50.00' } } } });
-    expect(e).toMatchObject({ type: 'payout.failed', refKind: 'payout', refId: 'B1' });
-    expect(e?.summary).toBe('Payment of USD 50.00 to sam@example.com unclaimed');
+    expect(e).toMatchObject({ type: 'payout.pending', refKind: 'payout', refId: 'B1' });
+    expect(e?.summary).toBe('Payment of USD 50.00 to sam@example.com is not claimed yet');
+    expect(toEvent({ id: 'WH-3b', event_type: 'PAYMENT.PAYOUTS-ITEM.HELD', resource: { payout_item: {} } })?.type).toBe('payout.pending');
+  });
+  it('only final payout item states are failures', () => {
+    for (const s of ['FAILED', 'DENIED', 'BLOCKED', 'RETURNED', 'REFUNDED', 'REVERSED', 'CANCELED']) {
+      expect(toEvent({ id: `WH-${s}`, event_type: `PAYMENT.PAYOUTS-ITEM.${s}`, resource: { payout_item: {} } })?.type).toBe('payout.failed');
+    }
+    expect(toEvent({ id: 'WH-S', event_type: 'PAYMENT.PAYOUTS-ITEM.SUCCEEDED', resource: { payout_item: {} } })?.type).toBe('payout.completed');
   });
   it('payout item failure carries the proposal id and the reason', () => {
     const e = toEvent({ id: 'WH-5', event_type: 'PAYMENT.PAYOUTS-ITEM.FAILED', resource: { payout_batch_id: 'B1', errors: { message: 'Receiver is unregistered' }, payout_item: { sender_item_id: 'ap_0123456789ab-1', receiver: 'x@example.com', amount: { currency: 'USD', value: '5.00' } } } });

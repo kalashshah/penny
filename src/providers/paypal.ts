@@ -38,12 +38,20 @@ export const PAYPAL_EVENTS = [
   'PAYMENT.PAYOUTSBATCH.DENIED',
   'PAYMENT.PAYOUTS-ITEM.SUCCEEDED',
   'PAYMENT.PAYOUTS-ITEM.FAILED',
-  'PAYMENT.PAYOUTS-ITEM.UNCLAIMED',
+  'PAYMENT.PAYOUTS-ITEM.DENIED',
   'PAYMENT.PAYOUTS-ITEM.BLOCKED',
   'PAYMENT.PAYOUTS-ITEM.RETURNED',
+  'PAYMENT.PAYOUTS-ITEM.REFUNDED',
+  'PAYMENT.PAYOUTS-ITEM.REVERSED',
+  'PAYMENT.PAYOUTS-ITEM.CANCELED',
+  'PAYMENT.PAYOUTS-ITEM.UNCLAIMED',
+  'PAYMENT.PAYOUTS-ITEM.HELD',
   'PAYMENT.CAPTURE.COMPLETED',
   'PAYMENT.CAPTURE.REFUNDED',
 ];
+
+/** Payout item states that are final failures: the money did not (or will not) reach the recipient. */
+const PAYOUT_ITEM_FAILED = new Set(['failed', 'denied', 'blocked', 'returned', 'refunded', 'reversed', 'canceled']);
 
 const OPEN_STATUSES = ['SENT', 'UNPAID', 'PARTIALLY_PAID', 'PAYMENT_PENDING'];
 // Search filter only: search-invoices rejects PAID_EXTERNAL even though invoices can carry it.
@@ -584,25 +592,32 @@ export function toEvent(body: unknown): PennyEvent | null {
     const type: PennyEventType = t.endsWith('.SUCCESS') ? 'payout.completed' : t.endsWith('.DENIED') ? 'payout.failed' : 'other';
     const amount = money(r.batch_header?.amount);
     const id = r.batch_header?.payout_batch_id;
-    const payoutKey = r.batch_header?.sender_batch_header?.sender_batch_id;
+    // Only a denied batch names the proposal: a successful batch says nothing about whether its item reached anyone
+    // (the item can still be unclaimed), so the item events alone settle a proposal as done.
+    const payoutKey = type === 'payout.failed' ? r.batch_header?.sender_batch_header?.sender_batch_id : undefined;
     return { ...base, type, summary: `Payout batch ${id ?? ''} ${type === 'payout.completed' ? 'completed' : type === 'payout.failed' ? 'was denied' : 'is processing'} (${fmtMoney(amount)})`, amount, refId: id, refKind: 'payout', payoutKey, reason: type === 'payout.failed' ? 'PayPal denied the payout batch' : undefined };
   }
   if (t.startsWith('PAYMENT.PAYOUTS-ITEM.')) {
     const item = r.payout_item ?? {};
     const amount = money(item.amount);
-    const ok = t.endsWith('.SUCCEEDED');
     const state = t.split('.').pop()?.toLowerCase() ?? '';
+    // Only these are final failures; unclaimed and held can still go through (or come back), so they only inform.
+    const type: PennyEventType = state === 'succeeded' ? 'payout.completed' : PAYOUT_ITEM_FAILED.has(state) ? 'payout.failed' : 'payout.pending';
     // payout() sends sender_item_id `${proposalId}-1`.
     const sender = typeof item.sender_item_id === 'string' ? item.sender_item_id : undefined;
+    const how = type === 'payout.completed' ? 'went through' : type === 'payout.failed' ? state : state === 'unclaimed' ? 'is not claimed yet' : state === 'held' ? 'is on hold at PayPal' : `is ${state}`;
+    const why =
+      r.errors?.message ??
+      (state === 'unclaimed' ? 'the recipient has no PayPal account yet; PayPal returns the money if it stays unclaimed for 30 days' : state === 'held' ? 'PayPal is reviewing it' : undefined);
     return {
       ...base,
-      type: ok ? 'payout.completed' : 'payout.failed',
-      summary: `Payment of ${fmtMoney(amount)} to ${item.receiver ?? 'recipient'} ${ok ? 'went through' : state}`,
+      type,
+      summary: `Payment of ${fmtMoney(amount)} to ${item.receiver ?? 'recipient'} ${how}`,
       amount,
       refId: r.payout_batch_id,
       refKind: 'payout',
       payoutKey: sender?.replace(/-1$/, ''),
-      reason: ok ? undefined : [state, r.errors?.message ?? (state === 'unclaimed' ? 'the recipient has no PayPal account yet; PayPal returns the money if it stays unclaimed for 30 days' : undefined)].filter(Boolean).join(': '),
+      reason: type === 'payout.completed' ? undefined : [state, why].filter(Boolean).join(': '),
     };
   }
   if (t === 'PAYMENT.CAPTURE.COMPLETED' || t === 'PAYMENT.CAPTURE.REFUNDED') {
