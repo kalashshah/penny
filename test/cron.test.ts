@@ -30,9 +30,10 @@ const dispute = (id: string, respondBy: string, status = 'WAITING_FOR_SELLER_RES
 describe('deadlineAlerts', () => {
   it('flags invoices a week or more overdue, once a week', () => {
     const a = deadlineAlerts([inv('A', '2026-11-13'), inv('B', '2026-11-15'), inv('C', '2026-11-01', 'paid')], [], now);
-    expect(a.map((x) => x.key)).toEqual(['overdue:A']);
+    expect(a.map((x) => x.key)).toEqual(['overdue:A:1']);
     expect(a[0].title).toBe('Invoice A (Acme) is 7 days overdue');
-    expect(a[0].since).toBe(now - 7 * 86_400_000);
+    // A week later it is a new key, so a new alert.
+    expect(deadlineAlerts([inv('A', '2026-11-13')], [], now + 7 * 86_400_000)[0].key).toBe('overdue:A:2');
   });
   it('flags disputes due within 48 hours, keyed by deadline', () => {
     const a = deadlineAlerts([], [dispute('D1', '2026-11-21T12:00:00Z'), dispute('D2', '2026-11-25T12:00:00Z'), dispute('D3', '2026-11-19T12:00:00Z'), dispute('D4', '2026-11-21T00:00:00Z', 'RESOLVED')], now);

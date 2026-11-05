@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Approvals, runOrHold } from '../src/approvals';
 import type { Env } from '../src/env';
-import { handleWebhook } from '../src/events';
+import { createAlert, handleWebhook } from '../src/events';
 import type { Memory } from '../src/memory';
 import { toEvent } from '../src/providers/paypal';
 import type { Invoice, PaymentProvider } from '../src/providers/types';
@@ -137,5 +137,19 @@ describe('handleWebhook', () => {
     const off = await approvals.get(p.id);
     expect(off?.status).toBe('rejected');
     expect(off?.result).toMatch(/refunded/);
+  });
+});
+
+describe('createAlert', () => {
+  it('keeps one alert per tenant and event, and says when it already existed', async () => {
+    const env = { DB: fakeD1() } as Env;
+    const a = await createAlert(env, 't_1', { eventId: 'WH-1', title: 'x', detail: 'y' });
+    const [b, c] = await Promise.all([createAlert(env, 't_1', { eventId: 'WH-1', title: 'x', detail: 'y' }), createAlert(env, 't_2', { eventId: 'WH-1', title: 'x', detail: 'y' })]);
+    expect(a.existed).toBeUndefined();
+    expect(b).toMatchObject({ id: a.id, existed: true });
+    expect(c.existed).toBeUndefined();
+    await createAlert(env, 't_1', { title: 'no key', detail: '' });
+    await createAlert(env, 't_1', { title: 'no key', detail: '' });
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM alerts WHERE tenant_id = 't_1'").first<number>('n'))).toBe(3);
   });
 });

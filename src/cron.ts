@@ -105,14 +105,12 @@ export async function reconcilePayouts(env: Env, limit = 5, minAgeMs = 10 * 60_0
 
 /** An invoice this many days past due gets an alert, at most once a week. */
 export const OVERDUE_DAYS = 7;
-const WEEK_MS = 7 * 86_400_000;
 const RESPOND_WINDOW_MS = 48 * 60 * 60_000;
 const RESOLVED = new Set(['RESOLVED', 'resolved']);
 
 export interface DeadlineAlert {
-  /** Stored as the alert's event_id; an alert with this key created after `since` means "already said". */
+  /** Stored as the alert's event_id, which is unique per tenant: an alert with this key means "already said". */
   key: string;
-  since: number;
   title: string;
   detail: string;
   path: string;
@@ -130,8 +128,8 @@ export function deadlineAlerts(open: Invoice[], disputes: Dispute[], now: number
     if (!(days >= OVERDUE_DAYS)) continue;
     const who = i.customer.name || i.customer.email || 'the customer';
     out.push({
-      key: `overdue:${i.id}`,
-      since: now - WEEK_MS,
+      // One per week overdue (7 days, 14 days...): alert keys are unique per tenant, so the week is in the key.
+      key: `overdue:${i.id}:${Math.floor(days / 7)}`,
       title: `Invoice ${i.number} (${who}) is ${days} days overdue`,
       detail: `${fmtMoney(i.due)} is still due. Penny can send ${who} a reminder, or talk through what to do.`,
       path: `/p/invoice/${encodeURIComponent(i.id)}`,
@@ -144,7 +142,6 @@ export function deadlineAlerts(open: Invoice[], disputes: Dispute[], now: number
     out.push({
       // The deadline is in the key: a new deadline on the same dispute is worth a new alert.
       key: `respond-by:${d.id}:${d.respondBy}`,
-      since: 0,
       title: `Dispute ${d.id} needs a response within ${Math.max(1, Math.round(left / 3_600_000))} hours`,
       detail: `${fmtMoney(d.amount)} is at stake and PayPal decides against you if nobody responds by ${d.respondBy}. Penny can draft the reply.`,
       path: `/p/dispute/${encodeURIComponent(d.id)}`,
@@ -183,10 +180,8 @@ export async function watchDeadlines(env: Env, now = Date.now(), batch = DEADLIN
       const provider = await providerFor(env, tenants, t);
       const [open, disputes] = await Promise.all([provider.listInvoices({ status: 'open', limit: 50 }), provider.listDisputes()]);
       for (const a of deadlineAlerts(open, disputes, now)) {
-        const seen = await env.DB.prepare('SELECT 1 AS x FROM alerts WHERE tenant_id = ? AND event_id = ? AND created_at > ? LIMIT 1').bind(t.id, a.key, a.since).first<number>('x');
-        if (seen) continue;
-        await createAlert(env, t.id, { eventId: a.key, title: a.title, detail: a.detail, page: `${env.PUBLIC_URL}${a.path}?k=${encodeURIComponent(t.pageKey)}` });
-        raised++;
+        const made = await createAlert(env, t.id, { eventId: a.key, title: a.title, detail: a.detail, page: `${env.PUBLIC_URL}${a.path}?k=${encodeURIComponent(t.pageKey)}` });
+        if (!made.existed) raised++;
       }
     } catch (e) {
       console.error('deadlines_tenant_failed', { tenant: t.id, error: String(e) });

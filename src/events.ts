@@ -108,9 +108,9 @@ export async function handleWebhook(
     const off = await callOffFor(env, t, event.refId, `The invoice it waited on was ${event.type === 'invoice.cancelled' ? 'cancelled' : 'refunded'}.`);
     if (off) detail = `${detail} ${off}`;
   }
-  // A retry after the alert was written but before processed was set should not alert twice.
-  const prior = inserted.meta.changes ? null : await env.DB.prepare('SELECT id FROM alerts WHERE tenant_id = ? AND event_id = ?').bind(t.id, event.id).first<string>('id');
-  const alert = prior ? { id: prior } : await createAlert(env, t.id, { eventId: event.id, title: event.summary, detail, page });
+  // A retry after the alert was written but before processed was set, or a replay racing this delivery, gets the
+  // existing alert back from createAlert rather than a second one.
+  const alert = await createAlert(env, t.id, { eventId: event.id, title: event.summary, detail, page });
   await done();
   ctx.waitUntil(memory.remember(`${new Date().toUTCString()}: ${event.summary}`, false).catch((e) => console.error('memory.remember_failed', String(e))));
   return Response.json({ ok: true, alert: alert.id });
@@ -140,12 +140,18 @@ export async function callOffFor(env: Env, t: Tenant, invoiceId: string, why: st
   return `Called off: ${off.map((p) => `paying ${p.input.recipientEmail} ${p.currency} ${p.amount.toFixed(2)}`).join(', ')}.`;
 }
 
-export async function createAlert(env: Env, tenantId: string, a: { eventId?: string; title: string; detail: string; page?: string }): Promise<Alert> {
+/**
+ * Adds an alert. One with an eventId is kept once per tenant (a unique index): a second one for the same event, such as
+ * a webhook replay racing the first delivery, adds nothing and gets the existing alert back with `existed: true`.
+ */
+export async function createAlert(env: Env, tenantId: string, a: { eventId?: string; title: string; detail: string; page?: string }): Promise<Alert & { existed?: boolean }> {
   const alert: Alert = { id: shortId('al'), tenant_id: tenantId, event_id: a.eventId ?? null, title: a.title, detail: a.detail, page: a.page ?? null, created_at: Date.now(), dismissed: 0 };
-  await env.DB.prepare('INSERT INTO alerts (id, tenant_id, event_id, title, detail, page, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  const res = await env.DB.prepare('INSERT OR IGNORE INTO alerts (id, tenant_id, event_id, title, detail, page, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .bind(alert.id, alert.tenant_id, alert.event_id, alert.title, alert.detail, alert.page, alert.created_at)
     .run();
-  return alert;
+  if (res.meta.changes || !a.eventId) return alert;
+  const existing = await env.DB.prepare('SELECT * FROM alerts WHERE tenant_id = ? AND event_id = ?').bind(tenantId, a.eventId).first<Alert>();
+  return { ...(existing ?? alert), existed: true };
 }
 
 export async function listAlerts(env: Env, tenantId: string): Promise<Alert[]> {
