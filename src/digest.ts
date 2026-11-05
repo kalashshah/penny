@@ -11,6 +11,8 @@ const DAY = 86_400_000;
 /** Monday 14:00 UTC: morning on the US east coast, afternoon in Europe. */
 const SEND_HOUR_UTC = 14;
 const LOOKAHEAD_DAYS = 14;
+/** A digest claim not marked sent after this long was left by a run that died; another run may take it over. */
+const CLAIM_STALE_MS = 60 * 60_000;
 
 /** The Monday (UTC) of the week `now` falls in, as yyyy-mm-dd. */
 export function weekOf(now: number): string {
@@ -97,25 +99,33 @@ export async function sendDigests(env: Env, now = Date.now(), limit = 3): Promis
   const tenants = new Tenants(env);
   let sent = 0;
   // Tenants already done this week are left out in SQL, so every tenant is reached however many there are.
-  for (const t of await tenants.listConnectedWithoutDigest(week, limit)) {
-    // The INSERT is the lock: another run that got here first owns this tenant's week.
-    const claimed = await env.DB.prepare('INSERT OR IGNORE INTO digests (tenant_id, week, sent_at) VALUES (?, ?, ?)').bind(t.id, week, now).run();
-    if (!claimed.meta.changes) continue;
+  for (const t of await tenants.listConnectedWithoutDigest(week, limit, now - CLAIM_STALE_MS)) {
+    // The INSERT is the lock: another run that got here first owns this tenant's week. A claim never marked sent and
+    // over an hour old belongs to a run that died before sending; it is taken over.
+    const claimed =
+      (await env.DB.prepare('INSERT OR IGNORE INTO digests (tenant_id, week, sent_at) VALUES (?, ?, ?)').bind(t.id, week, now).run()).meta.changes ||
+      (await env.DB.prepare('UPDATE digests SET sent_at = ? WHERE tenant_id = ? AND week = ? AND via IS NULL AND sent_at < ?').bind(now, t.id, week, now - CLAIM_STALE_MS).run()).meta.changes;
+    if (!claimed) continue;
+    let delivered: 'email' | 'alert' | null = null;
     try {
       const d = await digestFor(env, tenants, t, now);
       const to = env.EMAIL ? await env.DB.prepare('SELECT email FROM user WHERE id = ?').bind(t.ownerUserId).first<string>('email') : null;
       if (to) {
         const link = `${env.PUBLIC_URL}/`;
         await sendEmail(env, { to, subject: d.subject, text: `${d.lines.join('\n')}\n\nOpen Penny: ${link}`, html: digestHtml(t.businessName, d.lines, link) });
+        delivered = 'email';
       } else {
         await createAlert(env, t.id, { eventId: `digest:${week}`, title: d.subject, detail: d.lines.join(' '), page: `${env.PUBLIC_URL}/p/summary?k=${encodeURIComponent(t.pageKey)}` });
+        delivered = 'alert';
       }
-      await env.DB.prepare('UPDATE digests SET via = ? WHERE tenant_id = ? AND week = ?').bind(to ? 'email' : 'alert', t.id, week).run();
+      await env.DB.prepare('UPDATE digests SET via = ? WHERE tenant_id = ? AND week = ?').bind(delivered, t.id, week).run();
       sent++;
     } catch (e) {
-      // Give the week back so the next hourly run tries again.
-      await env.DB.prepare('DELETE FROM digests WHERE tenant_id = ? AND week = ?').bind(t.id, week).run();
-      console.error('digest_failed', { tenant: t.id, error: String(e) });
+      // Not sent: give the week back so the next run tries again. Sent: keep the claim whatever failed after, so it
+      // is never sent twice.
+      if (!delivered) await env.DB.prepare('DELETE FROM digests WHERE tenant_id = ? AND week = ? AND via IS NULL').bind(t.id, week).run();
+      else sent++;
+      console.error('digest_failed', { tenant: t.id, delivered, error: String(e) });
     }
   }
   return sent;

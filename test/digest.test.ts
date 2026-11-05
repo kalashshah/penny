@@ -132,4 +132,30 @@ describe('sendDigests', () => {
     expect(await sendDigests(env, now, 10)).toBe(5);
     expect(await alerts()).toHaveLength(5);
   });
+
+  it('takes over a claim a dead run left unsent after an hour, and keeps a claim whose send went out', async () => {
+    const { env, seed, alerts } = rig(false);
+    await seed();
+    await env.DB.prepare("INSERT INTO digests (tenant_id, week, sent_at) VALUES ('t_1', '2026-11-09', ?)").bind(now - 30 * 60_000).run();
+    expect(await sendDigests(env, now)).toBe(0);
+    expect(await sendDigests(env, now + 31 * 60_000)).toBe(1);
+    expect(await alerts()).toHaveLength(1);
+    const row = await env.DB.prepare("SELECT via FROM digests WHERE tenant_id = 't_1'").first<string>('via');
+    expect(row).toBe('alert');
+  });
+
+  it('never gives the week back once the digest went out', async () => {
+    const { env, seed, alerts } = rig(false);
+    await seed();
+    // The send works, then recording it fails.
+    const prepare = env.DB.prepare.bind(env.DB);
+    (env.DB as { prepare: unknown }).prepare = (sql: string) => {
+      if (sql.startsWith('UPDATE digests SET via')) throw new Error('D1 hiccup');
+      return prepare(sql);
+    };
+    expect(await sendDigests(env, now)).toBe(1);
+    (env.DB as { prepare: unknown }).prepare = prepare;
+    expect(await sendDigests(env, now + 5 * 60_000)).toBe(0);
+    expect(await alerts()).toHaveLength(1);
+  });
 });

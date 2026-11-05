@@ -113,12 +113,12 @@ export class Tenants {
     return (r.results ?? []).map(fromRow);
   }
 
-  /** Connected tenants that have no digest row for this week yet, oldest first. */
-  async listConnectedWithoutDigest(week: string, limit: number): Promise<Tenant[]> {
+  /** Connected tenants without this week's digest: no row, or only a claim never marked sent from before `staleBefore`. Oldest first. */
+  async listConnectedWithoutDigest(week: string, limit: number, staleBefore: number): Promise<Tenant[]> {
     const r = await this.env.DB.prepare(
-      'SELECT * FROM tenants WHERE paypal_client_id IS NOT NULL AND paypal_secret_ct IS NOT NULL AND id NOT IN (SELECT tenant_id FROM digests WHERE week = ?) ORDER BY created_at LIMIT ?',
+      'SELECT * FROM tenants WHERE paypal_client_id IS NOT NULL AND paypal_secret_ct IS NOT NULL AND id NOT IN (SELECT tenant_id FROM digests WHERE week = ? AND (via IS NOT NULL OR sent_at >= ?)) ORDER BY created_at LIMIT ?',
     )
-      .bind(week, limit)
+      .bind(week, staleBefore, limit)
       .all<Row>();
     return (r.results ?? []).map(fromRow);
   }
