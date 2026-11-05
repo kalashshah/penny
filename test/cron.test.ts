@@ -1,9 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Approvals } from '../src/approvals';
-import { deadlineAlerts, pollWaiting } from '../src/cron';
+import { deadlineAlerts, pollWaiting, watchDeadlines } from '../src/cron';
 import type { Env } from '../src/env';
 import { RailError, type Dispute, type Invoice, type PaymentProvider } from '../src/providers/types';
 import { fakeD1 } from './helpers/d1';
+
+const rail = vi.hoisted(() => ({ seen: [] as string[] }));
+vi.mock('../src/providers', () => ({
+  providerFor: async (_env: unknown, _tenants: unknown, t: { id: string }) => {
+    rail.seen.push(t.id);
+    return { listInvoices: async () => [], listDisputes: async () => [] };
+  },
+}));
 
 const now = Date.UTC(2026, 10, 20, 12);
 const inv = (id: string, dueDate: string, status: Invoice['status'] = 'sent'): Invoice => ({
@@ -51,5 +59,25 @@ describe('pollWaiting', () => {
     const off = await approvals.get(p.id);
     expect(off?.status).toBe('rejected');
     expect(off?.result).toMatch(/no longer has the invoice/);
+  });
+});
+
+describe('watchDeadlines', () => {
+  it('pages through every tenant a batch per run, and starts a new pass an hour after the last', async () => {
+    const env = { DB: fakeD1(), PUBLIC_URL: 'https://penny.test', PENNY_MASTER_KEY: '' } as Env;
+    for (let n = 0; n < 25; n++) {
+      await env.DB.prepare('INSERT INTO user (id, email, name) VALUES (?, ?, ?)').bind(`u${n}`, `o${n}@x.test`, 'O').run();
+      await env.DB.prepare(
+        "INSERT INTO tenants (id, owner_user_id, business_name, paypal_client_id, paypal_secret_ct, paypal_secret_iv, mcp_token_hash, mcp_token_ct, mcp_token_iv, page_key, created_at) VALUES (?, ?, 'B', 'APP', 'ct', 'iv', ?, 'c', 'i', ?, 0)",
+      )
+        .bind(`t_${String(n).padStart(2, '0')}`, `u${n}`, `h${n}`, `pk${n}`)
+        .run();
+    }
+    rail.seen = [];
+    for (const m of [0, 5, 10, 15]) await watchDeadlines(env, now + m * 60_000, 10);
+    expect(rail.seen).toHaveLength(25);
+    expect(new Set(rail.seen).size).toBe(25);
+    await watchDeadlines(env, now + 61 * 60_000, 10);
+    expect(rail.seen).toHaveLength(35);
   });
 });

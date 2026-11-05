@@ -10,16 +10,16 @@ import type { Dispute, Invoice, PaymentProvider } from './providers/types';
 import { fmtMoney, RailError } from './providers/types';
 import { isConnected, Tenants, type Tenant } from './tenants';
 
-/** Every five minutes: file ended calls' transcripts into memory, expire stale approvals, catch missed invoice webhooks; hourly, deadlines and the weekly digest. */
+/** Every five minutes: file ended calls' transcripts into memory, expire stale approvals, catch missed invoice webhooks, settle unclear payouts, a slice of the deadline checks and of the weekly digest. */
 export async function runCron(env: Env): Promise<void> {
   await Promise.all([
     ingestEndedCalls(env, async (tenantId) => new Memory(env, tenantId)).catch((e) => console.error('ingest_failed', String(e))),
     Approvals.expireStale(env.DB).catch((e) => console.error('expire_failed', String(e))),
     pollWaiting(env).catch((e) => console.error('poll_waiting_failed', String(e))),
     reconcilePayouts(env).catch((e) => console.error('reconcile_failed', String(e))),
-    // Once an hour (the cron runs every five minutes): a PayPal read per tenant is too many to do every run.
-    new Date().getUTCMinutes() < 5 ? watchDeadlines(env).catch((e) => console.error('deadlines_failed', String(e))) : undefined,
-    new Date().getUTCMinutes() < 5 ? sendDigests(env).catch((e) => console.error('digest_failed', String(e))) : undefined,
+    // Both page through tenants a few per run, so each run's subrequests stay bounded however many tenants there are.
+    watchDeadlines(env).catch((e) => console.error('deadlines_failed', String(e))),
+    sendDigests(env).catch((e) => console.error('digest_failed', String(e))),
   ]);
 }
 
@@ -153,11 +153,32 @@ export function deadlineAlerts(open: Invoice[], disputes: Dispute[], now: number
   return out;
 }
 
-/** Hourly: raise the deadline alerts each connected tenant has not been given yet. */
-export async function watchDeadlines(env: Env, now = Date.now()): Promise<number> {
+/** Tenants per run for the deadline checks: each costs about three PayPal calls (token, invoices, disputes). */
+export const DEADLINE_BATCH = 10;
+/** A pass over every tenant starts at most this often, so a tenant is checked about hourly, or as often as the list allows. */
+const PASS_EVERY_MS = 60 * 60_000;
+
+/**
+ * Raises the deadline alerts connected tenants have not been given yet, a page of tenants per run. The cursor in D1
+ * says where the pass got to; a new pass waits until an hour after the last one started.
+ */
+export async function watchDeadlines(env: Env, now = Date.now(), batch = DEADLINE_BATCH): Promise<number> {
+  const state = await env.DB.prepare("SELECT cursor, pass_started_at FROM cron_cursor WHERE job = 'deadlines'").first<{ cursor: string | null; pass_started_at: number }>();
+  let cursor = state?.cursor ?? null;
+  let passStarted = state?.pass_started_at ?? 0;
+  if (!cursor) {
+    if (now - passStarted < PASS_EVERY_MS) return 0;
+    passStarted = now;
+  }
   const tenants = new Tenants(env);
+  const page = await tenants.listConnectedAfter(cursor, batch);
+  // Save the next position first: a run that dies on a tenant moves on next time instead of sticking on it.
+  cursor = page.length === batch ? page[page.length - 1].id : null;
+  await env.DB.prepare("INSERT INTO cron_cursor (job, cursor, pass_started_at) VALUES ('deadlines', ?, ?) ON CONFLICT (job) DO UPDATE SET cursor = excluded.cursor, pass_started_at = excluded.pass_started_at")
+    .bind(cursor, passStarted)
+    .run();
   let raised = 0;
-  for (const t of await tenants.listConnected(50)) {
+  for (const t of page) {
     try {
       const provider = await providerFor(env, tenants, t);
       const [open, disputes] = await Promise.all([provider.listInvoices({ status: 'open', limit: 50 }), provider.listDisputes()]);

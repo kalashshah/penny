@@ -88,18 +88,16 @@ async function digestFor(env: Env, tenants: Tenants, t: Tenant, now: number): Pr
 
 /**
  * Weekly: each connected tenant gets the digest once, by email to the owner when an email binding is
- * configured, otherwise as a dashboard alert. A few tenants per run, so a big tenant list spreads over
- * the hours instead of blowing one run's subrequest budget.
+ * configured, otherwise as a dashboard alert. A few tenants per run (every five minutes), so a big tenant list
+ * spreads over the runs instead of blowing one run's subrequest budget.
  */
 export async function sendDigests(env: Env, now = Date.now(), limit = 3): Promise<number> {
   if (!digestDue(now)) return 0;
   const week = weekOf(now);
   const tenants = new Tenants(env);
-  const done = new Set(
-    ((await env.DB.prepare('SELECT tenant_id FROM digests WHERE week = ?').bind(week).all<{ tenant_id: string }>()).results ?? []).map((r) => r.tenant_id),
-  );
   let sent = 0;
-  for (const t of (await tenants.listConnected(50)).filter((t) => !done.has(t.id)).slice(0, limit)) {
+  // Tenants already done this week are left out in SQL, so every tenant is reached however many there are.
+  for (const t of await tenants.listConnectedWithoutDigest(week, limit)) {
     // The INSERT is the lock: another run that got here first owns this tenant's week.
     const claimed = await env.DB.prepare('INSERT OR IGNORE INTO digests (tenant_id, week, sent_at) VALUES (?, ?, ?)').bind(t.id, week, now).run();
     if (!claimed.meta.changes) continue;

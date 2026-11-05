@@ -116,4 +116,20 @@ describe('sendDigests', () => {
     await seed();
     expect(await sendDigests(env, Date.UTC(2026, 10, 9, 10))).toBe(0);
   });
+
+  it('reaches tenants beyond the first fifty', async () => {
+    const { env, alerts } = rig(false);
+    for (let n = 0; n < 55; n++) {
+      const id = `t_${String(n).padStart(2, '0')}`;
+      await env.DB.prepare('INSERT INTO user (id, email, name) VALUES (?, ?, ?)').bind(`u${n}`, `o${n}@x.test`, 'O').run();
+      await env.DB.prepare(
+        "INSERT INTO tenants (id, owner_user_id, business_name, paypal_client_id, paypal_secret_ct, paypal_secret_iv, mcp_token_hash, mcp_token_ct, mcp_token_iv, page_key, created_at) VALUES (?, ?, 'Studio', 'cid', 'ct', 'iv', ?, 'c', 'i', ?, ?)",
+      )
+        .bind(id, `u${n}`, `h${n}`, `pk${n}`, n)
+        .run();
+      if (n < 50) await env.DB.prepare("INSERT INTO digests (tenant_id, week, sent_at, via) VALUES (?, '2026-11-09', 0, 'alert')").bind(id).run();
+    }
+    expect(await sendDigests(env, now, 10)).toBe(5);
+    expect(await alerts()).toHaveLength(5);
+  });
 });

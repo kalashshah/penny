@@ -105,9 +105,21 @@ export class Tenants {
     return r ? fromRow(r) : null;
   }
 
-  /** Tenants with PayPal connected, oldest first, for the cron. */
-  async listConnected(limit: number): Promise<Tenant[]> {
-    const r = await this.env.DB.prepare('SELECT * FROM tenants WHERE paypal_client_id IS NOT NULL AND paypal_secret_ct IS NOT NULL ORDER BY created_at LIMIT ?').bind(limit).all<Row>();
+  /** Tenants with PayPal connected and an id after `after` (or from the start), in id order: a page of a cron pass. */
+  async listConnectedAfter(after: string | null, limit: number): Promise<Tenant[]> {
+    const r = await this.env.DB.prepare('SELECT * FROM tenants WHERE paypal_client_id IS NOT NULL AND paypal_secret_ct IS NOT NULL AND id > ? ORDER BY id LIMIT ?')
+      .bind(after ?? '', limit)
+      .all<Row>();
+    return (r.results ?? []).map(fromRow);
+  }
+
+  /** Connected tenants that have no digest row for this week yet, oldest first. */
+  async listConnectedWithoutDigest(week: string, limit: number): Promise<Tenant[]> {
+    const r = await this.env.DB.prepare(
+      'SELECT * FROM tenants WHERE paypal_client_id IS NOT NULL AND paypal_secret_ct IS NOT NULL AND id NOT IN (SELECT tenant_id FROM digests WHERE week = ?) ORDER BY created_at LIMIT ?',
+    )
+      .bind(week, limit)
+      .all<Row>();
     return (r.results ?? []).map(fromRow);
   }
 
