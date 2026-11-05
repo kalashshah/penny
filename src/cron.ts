@@ -2,6 +2,7 @@ import { Approvals } from './approvals';
 import { ingestEndedCalls } from './calls';
 import { rows } from './db';
 import type { Env } from './env';
+import { sendDigests } from './digest';
 import { callOffFor, createAlert, releaseFor } from './events';
 import { Memory } from './memory';
 import { providerFor } from './providers';
@@ -9,7 +10,7 @@ import type { Dispute, Invoice } from './providers/types';
 import { fmtMoney } from './providers/types';
 import { isConnected, Tenants } from './tenants';
 
-/** Every five minutes: file ended calls' transcripts into memory, expire stale approvals, catch missed invoice webhooks. */
+/** Every five minutes: file ended calls' transcripts into memory, expire stale approvals, catch missed invoice webhooks; hourly, deadlines and the weekly digest. */
 export async function runCron(env: Env): Promise<void> {
   await Promise.all([
     ingestEndedCalls(env, async (tenantId) => new Memory(env, tenantId)).catch((e) => console.error('ingest_failed', String(e))),
@@ -17,6 +18,7 @@ export async function runCron(env: Env): Promise<void> {
     pollWaiting(env).catch((e) => console.error('poll_waiting_failed', String(e))),
     // Once an hour (the cron runs every five minutes): a PayPal read per tenant is too many to do every run.
     new Date().getUTCMinutes() < 5 ? watchDeadlines(env).catch((e) => console.error('deadlines_failed', String(e))) : undefined,
+    new Date().getUTCMinutes() < 5 ? sendDigests(env).catch((e) => console.error('digest_failed', String(e))) : undefined,
   ]);
 }
 

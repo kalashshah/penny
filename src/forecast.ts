@@ -158,8 +158,10 @@ export function forecast(input: Parameters<typeof flowItems>[0] & { currency: st
   return { currency: input.currency, today: input.today, horizon: input.horizon, start, startKnown: input.balance !== null, items, ...project(start, items, input.today, input.horizon) };
 }
 
-/** Fetches everything `forecast` needs from the rail and the approvals table. Type-only imports keep this file browser-safe. */
-export async function loadForecast(provider: PaymentProvider, approvals: Approvals, currency: string, horizon = 30, whatIf: WhatIf = []): Promise<Forecast> {
+export type ForecastInputs = Omit<Parameters<typeof forecast>[0], 'horizon' | 'whatIf'>;
+
+/** Fetches everything `forecast` needs from the rail and the approvals table (the weekly digest reuses the invoice lists). */
+export async function fetchForecastInputs(provider: PaymentProvider, approvals: Approvals, currency: string): Promise<ForecastInputs> {
   const now = new Date();
   const [open, paid, disputes, transactions, pending, waiting, balance] = await Promise.all([
     provider.listInvoices({ status: 'open', limit: 50 }),
@@ -171,7 +173,12 @@ export async function loadForecast(provider: PaymentProvider, approvals: Approva
     approvals.listWaiting(),
     provider.getBalance(currency).catch(() => null),
   ]);
-  return forecast({ today: now.toISOString().slice(0, 10), horizon, currency, balance: balance?.value ?? null, open, paid, disputes, transactions, proposals: [...pending, ...waiting], whatIf });
+  return { today: now.toISOString().slice(0, 10), currency, balance: balance?.value ?? null, open, paid, disputes, transactions, proposals: [...pending, ...waiting] };
+}
+
+/** Type-only imports keep this file browser-safe. */
+export async function loadForecast(provider: PaymentProvider, approvals: Approvals, currency: string, horizon = 30, whatIf: WhatIf = []): Promise<Forecast> {
+  return forecast({ ...(await fetchForecastInputs(provider, approvals, currency)), horizon, whatIf });
 }
 
 /** `?late=Acme:14,Northwind:7` ⇄ WhatIf. */

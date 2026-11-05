@@ -1,5 +1,6 @@
 import { betterAuth } from 'better-auth';
 import { emailOTP } from 'better-auth/plugins';
+import { sendEmail } from './email';
 import type { Env } from './env';
 
 type Auth = ReturnType<typeof betterAuth>;
@@ -61,15 +62,6 @@ export async function sessionUser(env: Env, headers: Headers): Promise<SessionUs
 
 export function googleEnabled(env: Env): boolean {
   return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
-}
-
-/** Login codes go out through Cloudflare Email Sending; with no binding they are logged, so local login still works. */
-async function sendEmail(env: Env, m: { to: string; subject: string; text: string; html: string }): Promise<void> {
-  if (!env.EMAIL) {
-    console.log(`[email:dev] to=${m.to} subject="${m.subject}"\n${m.text}`);
-    return;
-  }
-  await env.EMAIL.send({ ...m, from: env.EMAIL_FROM || 'penny@mail.keronlabs.com' });
 }
 
 function otpHtml(otp: string): string {
