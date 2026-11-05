@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Approvals } from '../src/approvals';
 import type { Env } from '../src/env';
 import { handleWebhook } from '../src/events';
 import type { Memory } from '../src/memory';
@@ -11,7 +12,7 @@ const tenant = { id: 't_1', pageKey: 'pk', approvalThreshold: 100, currency: 'US
 const memory = { remember: async () => '' } as unknown as Memory;
 const ctx = { waitUntil: () => {} };
 
-export function webhookRig() {
+function webhookRig() {
   const env = { DB: fakeD1(), PUBLIC_URL: 'https://penny.test', WEBHOOK_VERIFY: 'off' } as Env;
   const calls = { payout: 0 };
   const provider = {
@@ -45,5 +46,19 @@ describe('handleWebhook', () => {
     expect(r.duplicate).toBeUndefined();
     expect(await alerts()).toHaveLength(1);
     expect((await deliver(paid)).duplicate).toBe(true);
+  });
+
+  it('calls off waiting payouts when their invoice is cancelled, and releases them when paid', async () => {
+    const { env, deliver, calls } = webhookRig();
+    const approvals = new Approvals(env.DB, 't_1');
+    const later = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-2');
+    const other = await approvals.create('payout', 'Pay later', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@example.com' }, 'INV2-1');
+    await deliver({ id: 'WH-2', event_type: 'INVOICING.INVOICE.CANCELLED', resource: { invoice: { id: 'INV2-2', amount: { currency_code: 'USD', value: '50.00' } } } });
+    const off = await approvals.get(later.id);
+    expect(off?.status).toBe('rejected');
+    expect(off?.result).toMatch(/cancelled/);
+    await deliver(paid);
+    expect((await approvals.get(other.id))?.status).toBe('done');
+    expect(calls.payout).toBe(1);
   });
 });

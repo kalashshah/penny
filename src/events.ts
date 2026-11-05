@@ -75,14 +75,16 @@ export async function handleWebhook(
 
   let detail = DETAIL[event.type] ?? '';
   let page = pageFor(env, t, event);
-  // Payouts that were waiting on this invoice ("pay Sam when Acme pays") go now, or ask for a yes.
   if (event.type === 'invoice.paid' && event.refId) {
-    const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, event.refId);
-    if (released.length) {
-      detail = released.map((o) => (o.status === 'needs_approval' ? `You asked to pay ${o.proposal.input.recipientEmail} ${o.proposal.currency} ${o.proposal.amount.toFixed(2)} once this came in. It needs your yes.` : (o.result ?? ''))).join(' ');
-      const ask = released.find((o) => o.status === 'needs_approval');
-      if (ask) page = `${env.PUBLIC_URL}/p/proposal/${ask.proposal.id}?k=${encodeURIComponent(t.pageKey)}`;
+    const r = await releaseFor(env, t, provider, event.refId);
+    if (r) {
+      detail = r.detail;
+      page = r.page ?? page;
     }
+  }
+  if (event.type === 'invoice.cancelled' && event.refId) {
+    const off = await callOffFor(env, t, event.refId, 'The invoice it waited on was cancelled.');
+    if (off) detail = `${detail} ${off}`;
   }
   // A retry after the alert was written but before processed was set should not alert twice.
   const prior = inserted.meta.changes ? null : await env.DB.prepare('SELECT id FROM alerts WHERE tenant_id = ? AND event_id = ?').bind(t.id, event.id).first<string>('id');
@@ -90,6 +92,22 @@ export async function handleWebhook(
   await done();
   ctx.waitUntil(memory.remember(`${new Date().toUTCString()}: ${event.summary}`, false).catch((e) => console.error('memory.remember_failed', String(e))));
   return Response.json({ ok: true, alert: alert.id });
+}
+
+/** Payouts that were waiting on this invoice ("pay Sam when Acme pays") go now, or ask for a yes. Null when none waited. */
+export async function releaseFor(env: Env, t: Tenant, provider: PaymentProvider, invoiceId: string): Promise<{ detail: string; page?: string } | null> {
+  const released = await releaseWaiting({ approvals: new Approvals(env.DB, t.id), provider, threshold: t.approvalThreshold, currency: t.currency || 'USD' }, invoiceId);
+  if (!released.length) return null;
+  const detail = released.map((o) => (o.status === 'needs_approval' ? `You asked to pay ${o.proposal.input.recipientEmail} ${o.proposal.currency} ${o.proposal.amount.toFixed(2)} once this came in. It needs your yes.` : (o.result ?? ''))).join(' ');
+  const ask = released.find((o) => o.status === 'needs_approval');
+  return { detail, page: ask ? `${env.PUBLIC_URL}/p/proposal/${ask.proposal.id}?k=${encodeURIComponent(t.pageKey)}` : undefined };
+}
+
+/** The invoice will never be paid, so what waited on it is called off rather than waiting forever. Says so, or null. */
+export async function callOffFor(env: Env, t: Tenant, invoiceId: string, why: string): Promise<string | null> {
+  const off = await new Approvals(env.DB, t.id).callOff(invoiceId, why);
+  if (!off.length) return null;
+  return `Called off: ${off.map((p) => `paying ${p.input.recipientEmail} ${p.currency} ${p.amount.toFixed(2)}`).join(', ')}.`;
 }
 
 export async function createAlert(env: Env, tenantId: string, a: { eventId?: string; title: string; detail: string; page?: string }): Promise<Alert> {

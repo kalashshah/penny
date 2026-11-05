@@ -118,6 +118,15 @@ export class Approvals {
     return (r.results ?? []).map(fromRow);
   }
 
+  /** The invoice will never be paid (cancelled, refunded): what waited on it is called off, with why. */
+  async callOff(invoiceId: string, why: string): Promise<Proposal[]> {
+    const r = await this.db
+      .prepare("UPDATE proposals SET status = 'rejected', result = ?, decided_at = ? WHERE tenant_id = ? AND after_invoice = ? AND status = 'waiting' RETURNING *")
+      .bind(why, Date.now(), this.tenantId, invoiceId)
+      .all<Row>();
+    return (r.results ?? []).map(fromRow);
+  }
+
   async listRecent(limit = 10): Promise<Proposal[]> {
     return (await rows<Row>(this.db.prepare('SELECT * FROM proposals WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?').bind(this.tenantId, limit))).map(fromRow);
   }
