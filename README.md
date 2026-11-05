@@ -20,6 +20,13 @@ Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/) (Oct
 
 Later, Acme pays. Penny posts an alert: *"Invoice 0042 (USD 4,000.00) was paid by Acme — take the call?"* One click and she's on a call, opening with the news and Sam's payout ready for your yes.
 
+> **You:** Bluebird opened a dispute saying the order never arrived. It went FedEx, tracking 7712 4410 9921.
+> **Penny:** *(shows the dispute)* I'll send PayPal that FedEx tracking number as proof it shipped. Send it?
+> **You:** Yes. And Northwind paid their last invoice by cheque.
+> **Penny:** Evidence sent. I've recorded the cheque, so Northwind's invoice is paid in full.
+
+Every Monday she also sends the owner a short digest of the week (by email, or as a dashboard alert when email is not set up): what came in, what is still owed, what is waiting for a yes, and the lowest the balance gets over the next two weeks.
+
 ## How it is put together
 
 ```
@@ -39,13 +46,14 @@ Later, Acme pays. Penny posts an alert: *"Invoice 0042 (USD 4,000.00) was paid b
 |---|---|---|
 | Tenants | `src/tenants.ts` | one business per user; PayPal secret and MCP token sealed with AES-GCM (`src/crypto.ts`) |
 | Login | `src/auth.ts` | better-auth: email one-time codes, Google when configured |
-| Penny's tools | `src/tools.ts` | 20 MCP tools: summary, reports, cash forecast, invoices, reminders, disputes, pay, pay-when-paid, refund, approvals, transactions, memory |
-| Payment rail | `src/providers/paypal.ts` | Invoicing v2, Disputes v1, Payouts v1, Payments v2 (refunds), Transaction Search v1, Webhooks (signature verification) |
+| Penny's tools | `src/tools.ts` | 24 MCP tools: summary, reports, cash forecast, invoices (create, remind, cancel, record a cash/cheque/bank payment), disputes (reply, send tracking or notes as evidence, accept), pay, pay-when-paid, payout status, refund, approvals, transactions, memory |
+| Payment rail | `src/providers/paypal.ts` | Invoicing v2 (incl. cancel and external payments), Disputes v1 (incl. multipart provide-evidence), Payouts v1 (send and status), Payments v2 (refunds), Transaction Search v1, Webhooks (signature verification) |
 | Approvals | `src/approvals.ts` | propose → hold or run → confirm/cancel; 30-minute expiry; idempotent execution. Pay-when-paid payouts wait for an invoice's paid webhook, then run or ask |
 | Forecast | `src/forecast.ts`, `src/app/(app)/p/forecast/` | balance today (PayPal Balances), open invoices dated by how late each customer usually pays, held payouts, last month's payments repeating, open disputes if lost; a [Bryntum Scheduler](https://bryntum.com/products/scheduler/) timeline where dragging a payment re-runs the balance line |
 | Calls | `src/calls.ts` | persona + memory context + live snapshot → LlamaCalls call; transcripts filed into memory when calls end |
 | Reports | `src/app/(app)/p/reports/`, `src/reports.ts` | [AG Studio](https://www.ag-grid.com/studio/) dashboard over the tenant's live PayPal data (overview, who owes us, cash and disputes); Penny opens it on calls with `show_report`, the owner edits it or asks its OpenAI-backed assistant for new charts |
 | Alerts | `src/events.ts` | verified webhooks → dedupe → alert → memory |
+| Cron | `src/cron.ts`, `src/digest.ts` | every five minutes: transcripts into memory, expiring approvals, polling invoices that pay-when-paid payouts wait on; hourly: alerts for invoices a week overdue and disputes due within 48 hours; weekly (Monday afternoon UTC): a digest of the week (collected, outstanding, overdue, waiting payments, cash low point) emailed to the owner, or posted as an alert when no email binding is set |
 | App | `src/app/` | Next.js App Router on Cloudflare Workers via [OpenNext](https://opennext.js.org/cloudflare): landing page, dashboard, settings, login, the pages Penny screen-shares under `/p/*` (summary, invoice, dispute, approval, transactions with AG Grid), and the `/mcp`, webhook and auth route handlers. `src/context.ts` connects requests to bindings, sessions and tenants; `worker.ts` adds the cron |
 
 **AI in the loop:** the call agent (LlamaCalls' LLM brain, voice and face) decides which PayPal tools to call and how to explain the results; MemoryHQ extracts durable facts from calls and events and hands Penny a context block at the start of every call.
@@ -69,7 +77,7 @@ Later, Acme pays. Penny posts an alert: *"Invoice 0042 (USD 4,000.00) was paid b
 
 ## Swapping the payment rail
 
-Penny talks to `PaymentProvider` (`src/providers/types.ts`), never to PayPal directly. Add `src/providers/airwallex.ts` implementing the same 15 methods, add a `case` in `src/providers/index.ts`, store its credentials on the tenant. Tools, approvals, pages, webhooks and calls do not change.
+Penny talks to `PaymentProvider` (`src/providers/types.ts`), never to PayPal directly. Add `src/providers/airwallex.ts` implementing the same 19 methods, add a `case` in `src/providers/index.ts`, store its credentials on the tenant. Tools, approvals, pages, webhooks and calls do not change.
 
 ## Run it yourself
 
@@ -101,7 +109,7 @@ To fill a fresh sandbox with a small studio's books (invoices paid, open and ove
 ## Tests
 
 ```bash
-pnpm test        # approvals state machine, summary math, report rows, PayPal mappings, sealing, transcripts, persona
+pnpm test        # approvals state machine, summary math, report rows, PayPal mappings, sealing, transcripts, persona, invoice tools, payout status, weekly digest
 pnpm typecheck
 ```
 
