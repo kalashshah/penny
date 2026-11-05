@@ -59,11 +59,19 @@ export async function handleWebhook(
   const event = provider.parseEvent(body);
   if (!event) return Response.json({ ok: true, ignored: true });
 
+  const key = `${t.id}:${event.id}`;
   const inserted = await env.DB.prepare('INSERT OR IGNORE INTO events (id, tenant_id, provider, type, summary, payload, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(`${t.id}:${event.id}`, t.id, provider.name, event.type, event.summary, raw.slice(0, 60_000), Date.now())
+    .bind(key, t.id, provider.name, event.type, event.summary, raw.slice(0, 60_000), Date.now())
     .run();
-  if (!inserted.meta.changes) return Response.json({ ok: true, duplicate: true });
-  if (event.type === 'other') return Response.json({ ok: true, noted: true });
+  // Seen before: a no-op only if that delivery got to the end. Otherwise PayPal is retrying one we failed halfway.
+  if (!inserted.meta.changes && (await env.DB.prepare('SELECT processed FROM events WHERE id = ?').bind(key).first<number>('processed'))) {
+    return Response.json({ ok: true, duplicate: true });
+  }
+  const done = () => env.DB.prepare('UPDATE events SET processed = 1 WHERE id = ?').bind(key).run();
+  if (event.type === 'other') {
+    await done();
+    return Response.json({ ok: true, noted: true });
+  }
 
   let detail = DETAIL[event.type] ?? '';
   let page = pageFor(env, t, event);
@@ -76,7 +84,10 @@ export async function handleWebhook(
       if (ask) page = `${env.PUBLIC_URL}/p/proposal/${ask.proposal.id}?k=${encodeURIComponent(t.pageKey)}`;
     }
   }
-  const alert = await createAlert(env, t.id, { eventId: event.id, title: event.summary, detail, page });
+  // A retry after the alert was written but before processed was set should not alert twice.
+  const prior = inserted.meta.changes ? null : await env.DB.prepare('SELECT id FROM alerts WHERE tenant_id = ? AND event_id = ?').bind(t.id, event.id).first<string>('id');
+  const alert = prior ? { id: prior } : await createAlert(env, t.id, { eventId: event.id, title: event.summary, detail, page });
+  await done();
   ctx.waitUntil(memory.remember(`${new Date().toUTCString()}: ${event.summary}`, false).catch((e) => console.error('memory.remember_failed', String(e))));
   return Response.json({ ok: true, alert: alert.id });
 }

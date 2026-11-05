@@ -16,8 +16,9 @@ export function fakeD1(): D1Database {
         args = a.map((x) => (x === undefined ? null : (x as Arg)));
         return stmt;
       },
-      async first<T>() {
-        return (db.prepare(sql).get(...args) as T | undefined) ?? null;
+      async first<T>(col?: string) {
+        const row = db.prepare(sql).get(...args) as Record<string, unknown> | undefined;
+        return ((col ? row?.[col] : row) ?? null) as T | null;
       },
       async all<T>() {
         return { results: db.prepare(sql).all(...args) as T[], success: true, meta: {} };
