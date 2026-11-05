@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { confirm, runOrHold, type Approvals, type Proposal } from './approvals';
 import { sha256Hex } from './crypto';
 import type { Env } from './env';
+import { callOffFor, releaseFor } from './events';
 import { describeForecast, formatWhatIf, loadForecast } from './forecast';
 import type { Memory } from './memory';
 import type { Dispute, Invoice, Money, PaymentProvider, PayoutBatch } from './providers/types';
@@ -71,9 +72,24 @@ function compactDispute(d: Dispute) {
 }
 
 /** Same tenant, same arguments, same minute: same key. */
-export async function invoiceKey(tenantId: string, args: unknown, now = Date.now()): Promise<string> {
-  return `penny-inv-${(await sha256Hex(`${tenantId}|${JSON.stringify(args)}|${Math.floor(now / 60_000)}`)).slice(0, 40)}`;
+export async function invoiceKey(tenantId: string, args: unknown, now = Date.now(), prefix = 'penny-inv'): Promise<string> {
+  return `${prefix}-${(await sha256Hex(`${tenantId}|${JSON.stringify(args)}|${Math.floor(now / 60_000)}`)).slice(0, 40)}`;
 }
+
+/**
+ * What can be recorded as paid outside PayPal on an invoice: only one still waiting for money, at most what is due.
+ * Returns the amount (the whole balance by default) or a sentence the call agent can say.
+ */
+export function recordable(i: Invoice, requested?: number): { ok: true; money: Money } | { ok: false; error: string } {
+  if (i.status !== 'sent' && i.status !== 'partially_paid') return { ok: false, error: `Invoice ${i.number} is ${i.status.replace('_', ' ')}, not waiting for payment, so there is nothing to record.` };
+  const due = Math.round(i.due.value * 100) / 100;
+  if (due <= 0) return { ok: false, error: `Invoice ${i.number} has nothing left to pay.` };
+  const value = Math.round((requested ?? due) * 100) / 100;
+  if (value > due) return { ok: false, error: `Only ${fmtMoney(i.due)} is due on invoice ${i.number}; record that or less.` };
+  return { ok: true, money: { value, currency: i.due.currency } };
+}
+
+const METHOD_WORDS: Record<string, string> = { BANK_TRANSFER: 'bank transfer', CASH: 'cash', CHECK: 'cheque', WIRE_TRANSFER: 'wire', OTHER: 'another method' };
 
 /**
  * What can be refunded on an invoice: only one paid (fully or partly) through PayPal, and at most what was paid.
@@ -302,6 +318,61 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       guard(async () => {
         await provider.sendReminder(invoice_id, note);
         return { sent: true, invoice_id };
+      }),
+  );
+
+  server.registerTool(
+    'cancel_invoice',
+    {
+      description:
+        'Cancel a sent invoice that should not be paid (wrong amount, deal off). The customer is emailed unless notify_customer is false. Payouts waiting on it (pay_when_paid) are called off. Confirm which invoice first; to fix an amount, cancel and create a new one.',
+      inputSchema: { invoice_id: z.string(), note: z.string().max(500).optional(), notify_customer: z.boolean().optional() },
+    },
+    ({ invoice_id, note, notify_customer }) =>
+      guard(async () => {
+        const inv = await provider.getInvoice(invoice_id);
+        if (inv.status === 'partially_paid') return { error: `Invoice ${inv.number} already has a payment on it, so Penny will not cancel it; refund that payment or record the rest instead.` };
+        if (inv.status !== 'sent') return { error: `Invoice ${inv.number} is ${inv.status}, so there is nothing to cancel.` };
+        const notify = notify_customer ?? true;
+        await provider.cancelInvoice(inv.id, { note, notifyCustomer: notify });
+        const off = await callOffFor(deps.env, tenant, inv.id, 'The invoice it waited on was cancelled.');
+        const who = inv.customer.name || inv.customer.email;
+        return { cancelled: true, invoice_id: inv.id, spoken: [`Cancelled invoice ${inv.number} for ${who}${notify ? ' and let them know' : ''}.`, off].filter(Boolean).join(' '), page: pageUrl(env, withKey(`/p/invoice/${encodeURIComponent(inv.id)}`)) };
+      }),
+  );
+
+  server.registerTool(
+    'record_invoice_payment',
+    {
+      description:
+        'Record money a customer paid outside PayPal (cash, cheque, bank transfer) against an invoice, so it shows as paid. amount defaults to everything still due; payment_date defaults to today. If that pays it off, payouts waiting on it (pay_when_paid) go or ask for a yes, as if PayPal had been paid.',
+      inputSchema: {
+        invoice_id: z.string(),
+        method: z.enum(['BANK_TRANSFER', 'CASH', 'CHECK', 'WIRE_TRANSFER', 'OTHER']),
+        amount: z.number().positive().optional(),
+        payment_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    (a) =>
+      guard(async () => {
+        const inv = await provider.getInvoice(a.invoice_id);
+        const r = recordable(inv, a.amount);
+        if (!r.ok) return { error: r.error };
+        const date = a.payment_date ?? today();
+        if (date > today()) return { error: 'That payment date is in the future; record it once the money is in.' };
+        const idempotencyKey = await invoiceKey(tenant.id, a, Date.now(), 'penny-pay');
+        await provider.recordInvoicePayment(inv.id, { method: a.method, amount: r.money, date, note: a.note, idempotencyKey });
+        const after = await provider.getInvoice(inv.id);
+        // Paid in full outside PayPal is still paid: what waited on this invoice is released now rather than on a webhook.
+        const released = after.status === 'paid' ? await releaseFor(deps.env, tenant, provider, inv.id) : null;
+        const left = after.status === 'paid' ? 'it is now paid in full' : `${fmtMoney(after.due)} is still due`;
+        return {
+          recorded: true,
+          ...compactInvoice(after, today()),
+          spoken: [`Recorded ${fmtMoney(r.money)} by ${METHOD_WORDS[a.method]} on invoice ${inv.number}; ${left}.`, released?.detail].filter(Boolean).join(' '),
+          page: released?.page ?? pageUrl(env, withKey(`/p/invoice/${encodeURIComponent(inv.id)}`)),
+        };
       }),
   );
 

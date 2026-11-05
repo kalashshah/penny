@@ -40,6 +40,9 @@ export interface InvoiceInput {
   idempotencyKey?: string;
 }
 
+/** How a customer paid outside PayPal, as Penny records it on the invoice. */
+export type ExternalPaymentMethod = 'BANK_TRANSFER' | 'CASH' | 'CHECK' | 'WIRE_TRANSFER' | 'OTHER';
+
 export interface Dispute {
   id: string;
   reason: string;
@@ -125,6 +128,10 @@ export interface PaymentProvider {
   getInvoice(id: string): Promise<Invoice>;
   createAndSendInvoice(input: InvoiceInput): Promise<Invoice>;
   sendReminder(id: string, note?: string): Promise<void>;
+  /** Cancels a sent invoice; the customer is told unless notifyCustomer is false. */
+  cancelInvoice(id: string, opts: { note?: string; notifyCustomer: boolean }): Promise<void>;
+  /** Records money received outside the rail (cash, cheque, bank transfer) against an invoice. Returns the payment id. */
+  recordInvoicePayment(id: string, p: { method: ExternalPaymentMethod; amount: Money; date: string; note?: string; idempotencyKey?: string }): Promise<string>;
   listDisputes(): Promise<Dispute[]>;
   getDispute(id: string): Promise<Dispute>;
   messageDispute(id: string, message: string): Promise<void>;

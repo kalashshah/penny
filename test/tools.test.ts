@@ -1,6 +1,12 @@
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { describe, expect, it } from 'vitest';
-import type { Invoice } from '../src/providers/types';
-import { describePayout, describeUnsent, invoiceKey, payoutBatchId, refundable } from '../src/tools';
+import { Approvals } from '../src/approvals';
+import type { Env } from '../src/env';
+import type { Memory } from '../src/memory';
+import type { Invoice, Money, PaymentProvider } from '../src/providers/types';
+import type { Tenant } from '../src/tenants';
+import { describePayout, describeUnsent, invoiceKey, payoutBatchId, recordable, refundable, registerTools } from '../src/tools';
+import { fakeD1 } from './helpers/d1';
 
 const inv: Invoice = {
   id: 'INV2-1',
@@ -59,5 +65,79 @@ describe('payout status', () => {
     expect(describePayout({ id: 'B1', status: 'success', items: [{ id: 'I1', status: 'success', amount: { value: 400, currency: 'USD' }, recipient: 'sam@x.test' }] })).toBe('USD 400.00 to sam@x.test went through.');
     expect(describePayout({ id: 'B1', status: 'success', items: [{ id: 'I1', status: 'failed', amount: { value: 400, currency: 'USD' }, recipient: 'sam@x.test', error: 'Receiver is unregistered' }] })).toBe('USD 400.00 to sam@x.test failed (Receiver is unregistered).');
     expect(describePayout({ id: 'B1', status: 'denied', items: [] })).toMatch(/denied/);
+  });
+});
+
+describe('recordable', () => {
+  const open: Invoice = { ...inv, status: 'sent', due: { value: 1000, currency: 'USD' }, paymentIds: [] };
+  it('defaults to what is due and caps at it', () => {
+    expect(recordable(open)).toEqual({ ok: true, money: { value: 1000, currency: 'USD' } });
+    expect(recordable({ ...open, status: 'partially_paid', due: { value: 400, currency: 'USD' } }, 150)).toEqual({ ok: true, money: { value: 150, currency: 'USD' } });
+    const r = recordable(open, 1200);
+    expect(!r.ok && r.error).toMatch(/Only USD 1000.00 is due/);
+  });
+  it('refuses invoices not waiting for money', () => {
+    expect(recordable(inv).ok).toBe(false);
+    expect(recordable({ ...open, status: 'cancelled' }).ok).toBe(false);
+  });
+});
+
+/** The registered tools by name, run against a fake rail and a real (in-memory) approvals table. */
+function toolRig(invoice: Invoice) {
+  const handlers = new Map<string, (a: Record<string, unknown>) => Promise<{ content: { text: string }[] }>>();
+  const server = { registerTool: (name: string, _c: unknown, h: never) => handlers.set(name, h) } as unknown as McpServer;
+  const env = { DB: fakeD1(), PUBLIC_URL: 'https://penny.test' } as Env;
+  const tenant = { id: 't_1', pageKey: 'pk', approvalThreshold: 100, currency: 'USD' } as Tenant;
+  const calls: string[] = [];
+  let current = invoice;
+  const provider = {
+    name: 'paypal',
+    getInvoice: async () => current,
+    cancelInvoice: async () => {
+      calls.push('cancel');
+      current = { ...current, status: 'cancelled' };
+    },
+    recordInvoicePayment: async (_id: string, p: { amount: Money }) => {
+      calls.push(`record ${p.amount.value}`);
+      const due = Math.round((current.due.value - p.amount.value) * 100) / 100;
+      current = { ...current, status: due ? 'partially_paid' : 'paid', due: { ...current.due, value: due } };
+      return 'EXTR-1';
+    },
+    payout: async ({ amount, recipientEmail }: { amount: Money; recipientEmail: string }) => {
+      calls.push('payout');
+      return { id: 'PB-1', status: 'pending', amount, recipient: recipientEmail };
+    },
+  } as unknown as PaymentProvider;
+  const approvals = new Approvals(env.DB, tenant.id);
+  registerTools(server, { env, tenant, provider, approvals, memory: {} as Memory });
+  const run = async (name: string, args: Record<string, unknown>) => JSON.parse((await handlers.get(name)!(args)).content[0].text) as Record<string, unknown>;
+  return { run, approvals, calls };
+}
+
+describe('cancel_invoice and record_invoice_payment', () => {
+  const open: Invoice = { ...inv, status: 'sent', due: { value: 1000, currency: 'USD' }, paymentIds: [] };
+  it('cancelling calls off payouts waiting on the invoice', async () => {
+    const { run, approvals, calls } = toolRig(open);
+    const p = await approvals.create('payout', 'Pay Sam when Acme pays', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@x.test' }, open.id);
+    const r = await run('cancel_invoice', { invoice_id: open.id });
+    expect(calls).toEqual(['cancel']);
+    expect(r.spoken).toMatch(/^Cancelled invoice 0042 for Acme and let them know\. Called off: paying sam@x.test USD 50.00\.$/);
+    expect((await approvals.get(p.id))?.status).toBe('rejected');
+  });
+  it('refuses to cancel a paid invoice', async () => {
+    const { run, calls } = toolRig(inv);
+    expect((await run('cancel_invoice', { invoice_id: inv.id })).error).toMatch(/is paid/);
+    expect(calls).toEqual([]);
+  });
+  it('a cheque that pays it off releases what waited on it', async () => {
+    const { run, approvals, calls } = toolRig(open);
+    const p = await approvals.create('payout', 'Pay Sam when Acme pays', { value: 50, currency: 'USD' }, { recipientEmail: 'sam@x.test' }, open.id);
+    const part = await run('record_invoice_payment', { invoice_id: open.id, method: 'CHECK', amount: 400 });
+    expect(part.spoken).toBe('Recorded USD 400.00 by cheque on invoice 0042; USD 600.00 is still due.');
+    expect((await approvals.get(p.id))?.status).toBe('waiting');
+    const rest = await run('record_invoice_payment', { invoice_id: open.id, method: 'CASH' });
+    expect(rest.spoken).toMatch(/^Recorded USD 600.00 by cash on invoice 0042; it is now paid in full\. Paid USD 50.00 to sam@x.test/);
+    expect(calls).toEqual(['record 400', 'record 600', 'payout']);
+    expect((await approvals.get(p.id))?.status).toBe('done');
   });
 });

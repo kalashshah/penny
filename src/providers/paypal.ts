@@ -1,6 +1,7 @@
 import type {
   Dispute,
   DisputeEvidence,
+  ExternalPaymentMethod,
   Invoice,
   InvoiceInput,
   InvoiceStatus,
@@ -176,6 +177,31 @@ export class PayPalProvider implements PaymentProvider {
       send_to_recipient: true,
       send_to_invoicer: false,
     });
+  }
+
+  async cancelInvoice(id: string, { note, notifyCustomer }: { note?: string; notifyCustomer: boolean }): Promise<void> {
+    await this.api('POST', `/v2/invoicing/invoices/${encodeURIComponent(id)}/cancel`, {
+      subject: `Invoice cancelled by ${this.cfg.businessName}`,
+      ...(note ? { note } : {}),
+      send_to_recipient: notifyCustomer,
+      send_to_invoicer: false,
+    });
+  }
+
+  async recordInvoicePayment(id: string, p: { method: ExternalPaymentMethod; amount: Money; date: string; note?: string; idempotencyKey?: string }): Promise<string> {
+    const res = await this.api<{ payment_id?: string }>(
+      'POST',
+      `/v2/invoicing/invoices/${encodeURIComponent(id)}/payments`,
+      {
+        method: p.method,
+        payment_date: p.date,
+        amount: { currency_code: p.amount.currency, value: p.amount.value.toFixed(2) },
+        ...(p.note ? { note: p.note } : {}),
+      },
+      // Recording the same cheque twice would mark it paid twice over; a retried call replays the first.
+      p.idempotencyKey ? { 'PayPal-Request-Id': p.idempotencyKey } : {},
+    );
+    return res.payment_id ?? '';
   }
 
   // ---- disputes ------------------------------------------------------------
